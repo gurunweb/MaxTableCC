@@ -20,7 +20,7 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
 
       const task = db
         .prepare(
-          `SELECT id, chat_id, status, result, pause_summary, approval_prompt,
+          `SELECT id, chat_id, status, result, partial_result, pause_summary, approval_prompt,
                   error_message, steps_done, tokens_used, started_at, finished_at,
                   mode, max_time_sec, prompt_preview
            FROM tasks WHERE id = ?`,
@@ -31,6 +31,7 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
             chat_id: string;
             status: string;
             result: string | null;
+            partial_result: string | null;
             pause_summary: string | null;
             approval_prompt: string | null;
             error_message: string | null;
@@ -73,6 +74,7 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
         startedAt: task.started_at,
         finishedAt: task.finished_at,
         result: task.result,
+        partialResult: task.partial_result,
         pauseSummary: task.pause_summary,
         approvalPrompt: task.approval_prompt,
         errorMessage: task.error_message,

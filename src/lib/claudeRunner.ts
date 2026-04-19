@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import type Database from 'better-sqlite3';
 import { ensureChat } from './chats.ts';
+import { installSafeHook, removeSafeHook } from './permissionHook.ts';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? '/home/maxclaude/.local/bin/claude';
 
@@ -39,6 +40,7 @@ interface Running {
   proc: ChildProcess;
   softTimer: NodeJS.Timeout;
   hardTimer?: NodeJS.Timeout;
+  softSignalSent?: boolean;
 }
 
 const running = new Map<string, Running>();
@@ -117,17 +119,25 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
   // Команда claude
   const args = ['-p', actualPrompt, '--output-format', 'stream-json', '--verbose'];
 
-  // --resume только если в workdir уже есть .claude/
-  const claudeSessionDir = join(workdir, '.claude');
-  if (existsSync(claudeSessionDir)) {
-    args.push('--resume', chatId);
+  // --resume только если есть сохранённый claude_session_id
+  const chatRow = db
+    .prepare('SELECT claude_session_id FROM chats WHERE id = ?')
+    .get(chatId) as { claude_session_id: string | null } | undefined;
+  if (chatRow?.claude_session_id) {
+    args.push('--resume', chatRow.claude_session_id);
   }
 
   // Permission mode
   if (mode === 'plan') {
     args.push('--permission-mode', 'plan');
+    removeSafeHook(workdir);
+  } else if (mode === 'safe') {
+    // safe: default permissions + PreToolUse hook который даёт allow/ask/deny
+    installSafeHook(workdir);
+    args.push('--permission-mode', 'default');
   } else {
-    // auto и safe оба используют bypassPermissions (safe потом добавит hook)
+    // auto — полный байпас, hook чистим
+    removeSafeHook(workdir);
     args.push('--permission-mode', 'bypassPermissions');
   }
 
@@ -183,17 +193,18 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     try {
       proc.stdin.write(
         '\n[SYSTEM] Time budget is nearly exhausted. STOP current work NOW. ' +
-          'Produce a brief pause-summary:\n' +
-          '- SECTION "Сделано:" — key findings / files written\n' +
-          '- SECTION "Осталось:" — what remains to be done\n' +
+          'Finalize immediately with a pause summary using these EXACT markers:\n' +
+          '`## DONE` — bullet list of what was completed / files written\n' +
+          '`## REMAINING` — bullet list of what remains to be done\n' +
           'Save intermediate results to outputs/. Then finish your turn.\n',
       );
     } catch {
       // stdin may already be closed
     }
-    // Hard kill 90s later — если Claude не финализирует
     const r = running.get(taskId);
     if (r) {
+      r.softSignalSent = true;
+      // Hard kill 90s later — если Claude не финализирует
       r.hardTimer = setTimeout(() => {
         const still = running.get(taskId);
         if (still && !still.proc.killed) {
@@ -220,9 +231,45 @@ function handleEvent(db: Database.Database, taskId: string, line: string): void 
     return; // non-JSON noise
   }
 
-  // system init — нам интересен session_id (пишем, но не обязательно)
+  // system init — сохраняем session_id для следующего --resume
   if (ev.type === 'system' && ev.subtype === 'init') {
-    // Можно логировать tools в actions, но не обязательно
+    if (ev.session_id) {
+      db.prepare(
+        `UPDATE chats SET claude_session_id = ?, updated_at = ? WHERE id = (SELECT chat_id FROM tasks WHERE id = ?)`,
+      ).run(String(ev.session_id), Date.now(), taskId);
+    }
+    return;
+  }
+
+  // user message с tool_result — проверяем маркеры hook'а
+  if (ev.type === 'user' && ev.message?.content) {
+    const content = ev.message.content as Array<{ type: string; content?: unknown; is_error?: boolean }>;
+    for (const part of content) {
+      if (part.type === 'tool_result') {
+        const text =
+          typeof part.content === 'string'
+            ? part.content
+            : Array.isArray(part.content)
+              ? (part.content as Array<{ text?: string }>).map((p) => p.text ?? '').join('\n')
+              : '';
+        const awaiting = text.match(/\[CC_AWAITING_APPROVAL\]\s*(.+)/);
+        if (awaiting) {
+          const prompt = awaiting[1].trim();
+          // Помечаем задачу как awaiting_approval. Процесс Claude сам завершит turn —
+          // его result event игнорируется guard'ом. Session сохраняется → --resume работает.
+          db.prepare(
+            `UPDATE tasks SET status = 'awaiting_approval', approval_prompt = ?, finished_at = ? WHERE id = ?`,
+          ).run(prompt, Date.now(), taskId);
+          return;
+        }
+        const denied = text.match(/\[CC_DENIED\]\s*(.+)/);
+        if (denied) {
+          db.prepare(
+            `INSERT INTO actions (task_id, timestamp, kind, summary) VALUES (?, ?, ?, ?)`,
+          ).run(taskId, Date.now(), '🚫', 'denied: ' + denied[1].trim().slice(0, 160));
+        }
+      }
+    }
     return;
   }
 
@@ -252,18 +299,51 @@ function handleEvent(db: Database.Database, taskId: string, line: string): void 
 
   // Финальный результат
   if (ev.type === 'result') {
-    const status: TaskStatus = ev.subtype === 'success' ? 'done' : 'error';
+    // Защита: если уже перевели в терминальный статус (awaiting_approval/paused/cancelled) — не перезаписываем
+    const cur = db.prepare('SELECT status FROM tasks WHERE id = ?').get(taskId) as { status: string } | undefined;
+    if (cur && ['awaiting_approval', 'paused', 'cancelled', 'timeout'].includes(cur.status)) {
+      return;
+    }
+    const r = running.get(taskId);
+    const wasPaused = !!r?.softSignalSent;
     const resultText =
       typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '');
     const tokens =
       (ev.usage?.input_tokens ?? 0) +
       (ev.usage?.output_tokens ?? 0) +
       (ev.usage?.cache_read_input_tokens ?? 0);
-    db.prepare(
-      `UPDATE tasks SET status = ?, result = ?, finished_at = ?, steps_done = ?, tokens_used = ? WHERE id = ?`,
-    ).run(status, resultText, Date.now(), ev.num_turns ?? 0, tokens, taskId);
+
+    if (wasPaused && ev.subtype === 'success') {
+      // Извлекаем pause_summary из секций "Сделано:" / "Осталось:"
+      const pauseSummary = extractPauseSummary(resultText);
+      db.prepare(
+        `UPDATE tasks SET status = 'paused', partial_result = ?, pause_summary = ?,
+         finished_at = ?, steps_done = ?, tokens_used = ? WHERE id = ?`,
+      ).run(resultText, pauseSummary, Date.now(), ev.num_turns ?? 0, tokens, taskId);
+    } else {
+      const status: TaskStatus = ev.subtype === 'success' ? 'done' : 'error';
+      db.prepare(
+        `UPDATE tasks SET status = ?, result = ?, finished_at = ?, steps_done = ?, tokens_used = ? WHERE id = ?`,
+      ).run(status, resultText, Date.now(), ev.num_turns ?? 0, tokens, taskId);
+    }
     return;
   }
+}
+
+/** Извлекает pause-summary: секции `## DONE` и `## REMAINING` (или рус. «Сделано/Осталось»). */
+function extractPauseSummary(text: string): string {
+  const patterns: Array<[RegExp, RegExp]> = [
+    [/##\s*DONE\b[\s\S]*?(?=##\s*REMAINING|$)/i, /##\s*REMAINING\b[\s\S]*/i],
+    [/Сделано:[\s\S]*?(?=Осталось:|$)/i, /Осталось:[\s\S]*/i],
+  ];
+  for (const [doneRe, leftRe] of patterns) {
+    const d = text.match(doneRe);
+    const l = text.match(leftRe);
+    if (d || l) {
+      return [d?.[0], l?.[0]].filter(Boolean).map((s) => s!.trim()).join('\n\n').slice(0, 2000);
+    }
+  }
+  return text.slice(-500);
 }
 
 /** Обработка завершения процесса (если не было `result` → помечаем как error/timeout). */
@@ -285,7 +365,8 @@ function handleClose(
     task.status === 'error' ||
     task.status === 'timeout' ||
     task.status === 'cancelled' ||
-    task.status === 'paused'
+    task.status === 'paused' ||
+    task.status === 'awaiting_approval'
   ) {
     return;
   }

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS chats (
   last_prompt TEXT,                     -- последний промпт
   last_action TEXT,                     -- последнее действие Claude (live-статус)
   workdir TEXT NOT NULL,                -- абсолютный путь /workspaces/{email}/chats/{id}/
+  claude_session_id TEXT,               -- session_id от Claude CLI (для --resume)
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
