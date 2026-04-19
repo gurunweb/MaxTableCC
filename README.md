@@ -13,7 +13,7 @@ Google Sheets (GAS) ──▶ MaxTableSaaS (Cloudflare) ──▶ cc-bridge (э�
 - **Runtime:** Node.js 20 + Fastify
 - **БД:** SQLite (WAL-режим)
 - **OS:** Ubuntu 24.04 LTS
-- **Публичный endpoint:** https://2135.com (Caddy + Let's Encrypt TLS)
+- **Публичный endpoint:** https://maxidea.pro (Caddy + Let's Encrypt TLS)
 - **Запускается от:** non-root юзер `maxclaude`
 - **Управление:** systemd (`cc-bridge.service`)
 

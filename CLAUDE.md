@@ -108,7 +108,7 @@ Timer на `maxTime - 30` секунд шлёт Claude в stdin: "Время к�
 ## Деплой
 
 ```bash
-ssh maxclaude@2135.com
+ssh maxclaude@maxidea.pro
 cd /opt/cc-bridge
 ./scripts/deploy.sh
 ```
