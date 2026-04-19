@@ -1,0 +1,26 @@
+{
+  "name": "cc-bridge",
+  "version": "0.1.0",
+  "description": "HTTP-обёртка над Claude Code CLI для приёма задач от MaxTableSaaS (Cloudflare Workers)",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "node --watch --experimental-strip-types src/index.ts",
+    "start": "node --experimental-strip-types src/index.ts",
+    "lint": "node --experimental-strip-types --check src/index.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.1.0",
+    "@fastify/cors": "^10.0.1",
+    "better-sqlite3": "^11.5.0",
+    "nanoid": "^5.0.9",
+    "pino-pretty": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.1"
+  }
+}

@@ -1,0 +1,39 @@
+[Unit]
+Description=cc-bridge — Claude Code CLI HTTP proxy
+Documentation=https://github.com/gurunweb/cc-bridge
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=maxclaude
+Group=maxclaude
+WorkingDirectory=/opt/cc-bridge
+EnvironmentFile=/etc/cc-bridge/env
+ExecStart=/usr/bin/node --experimental-strip-types /opt/cc-bridge/src/index.ts
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cc-bridge
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/workspaces /var/lib/cc-bridge /tmp
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Лимиты
+LimitNOFILE=65536
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
