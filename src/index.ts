@@ -7,10 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { openDb } from './lib/db.ts';
 import { healthRoute } from './routes/health.ts';
+import { runRoute } from './routes/run.ts';
+import { statusRoute } from './routes/status.ts';
+import { stopRoute } from './routes/stop.ts';
+import { metaRoute } from './routes/meta.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Конфиг из env (читаем через systemd EnvironmentFile=/etc/cc-bridge/env)
+// Конфиг из env (через systemd EnvironmentFile=/etc/cc-bridge/env)
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '127.0.0.1';
 const BRIDGE_TOKEN = process.env.CLOUDCODE_BRIDGE_TOKEN;
@@ -22,13 +26,20 @@ if (!BRIDGE_TOKEN || BRIDGE_TOKEN.length < 32) {
   process.exit(1);
 }
 
+if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+  console.warn(
+    'WARN: CLAUDE_CODE_OAUTH_TOKEN is not set — claude -p will fail until login is done',
+  );
+}
+
 // Инициализация БД + миграция
 const db = openDb(DATABASE_PATH);
 const schema = readFileSync(join(__dirname, 'db', 'schema.sql'), 'utf8');
 db.exec(schema);
 
-// Версия из package.json
-const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as {
+  version: string;
+};
 const startTime = Date.now();
 
 const fastify = Fastify({
@@ -39,30 +50,30 @@ const fastify = Fastify({
       : undefined,
   },
   trustProxy: true,
+  bodyLimit: 50 * 1024 * 1024, // 50 MB для attachments на будущее
 });
 
-// Middleware: проверка X-Bridge-Token на всех /v1/* endpoints
+// Health public (для Caddy и SaaS health-check)
+await fastify.register(healthRoute, {
+  prefix: '/health',
+  version: pkg.version,
+  startTime,
+});
+
+// Middleware: X-Bridge-Token на всех /v1/*
 fastify.addHook('onRequest', async (request, reply) => {
   if (!request.url.startsWith('/v1/')) return;
   const token = request.headers['x-bridge-token'];
   if (token !== BRIDGE_TOKEN) {
-    reply.code(401).send({ error: 'invalid_bridge_token' });
+    return reply.code(401).send({ error: 'invalid_bridge_token' });
   }
 });
 
-// Health endpoint (public, для Caddy и SaaS health-check)
-fastify.register(healthRoute, {
-  prefix: '/health',
-  version: pkg.version as string,
-  startTime,
-});
-
-// TODO: остальные маршруты будут добавлены позже
-// - POST /v1/cloudcode/run
-// - GET  /v1/cloudcode/status/:taskId
-// - POST /v1/cloudcode/stop/:taskId
-// - GET  /v1/cloudcode/meta/{chats,paused,subscription}
-// - DELETE /v1/cloudcode/chats/:chatId
+// Bridge API
+await fastify.register(runRoute, { prefix: '/v1/cloudcode/run', db });
+await fastify.register(statusRoute, { prefix: '/v1/cloudcode/status', db });
+await fastify.register(stopRoute, { prefix: '/v1/cloudcode/stop', db });
+await fastify.register(metaRoute, { prefix: '/v1/cloudcode/meta', db });
 
 // Запуск
 try {
