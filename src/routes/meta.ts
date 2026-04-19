@@ -50,4 +50,22 @@ export const metaRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
       note: 'subscription introspection not implemented yet',
     });
   });
+
+  // Все чаты (для админ-страницы /admin/cloudcode на SaaS)
+  fastify.get('/all-chats', async (_request, reply) => {
+    const chats = db.prepare(
+      `SELECT id, user_email, first_prompt, last_prompt, last_action, updated_at
+       FROM chats ORDER BY updated_at DESC LIMIT 200`,
+    ).all();
+    return reply.send({ chats });
+  });
+
+  // Все задачи (для админ-мониторинга)
+  fastify.get('/all-tasks', async (_request, reply) => {
+    const tasks = db.prepare(
+      `SELECT id, chat_id, status, prompt_preview, mode, steps_done, tokens_used, started_at, finished_at
+       FROM tasks ORDER BY started_at DESC LIMIT 300`,
+    ).all();
+    return reply.send({ tasks });
+  });
 };
