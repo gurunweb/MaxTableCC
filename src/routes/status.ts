@@ -22,9 +22,12 @@ function extractSummary(result: string | null): string | null {
 function listOutputFiles(
   workdir: string,
   chatId: string,
+  userEmail: string,
   filesBaseUrl: string,
 ): Array<{ name: string; url: string; size: number }> {
   const outDir = join(workdir, 'outputs');
+  const flat = process.env.WORKSPACES_FLAT === '1';
+  const safeEmail = (userEmail || '').replace(/[^a-zA-Z0-9@._-]/g, '_');
   try {
     const entries = readdirSync(outDir, { withFileTypes: true });
     const result: Array<{ name: string; url: string; size: number }> = [];
@@ -33,9 +36,11 @@ function listOutputFiles(
       const full = join(outDir, e.name);
       let size = 0;
       try { size = statSync(full).size; } catch { /* noop */ }
-      const url = filesBaseUrl
-        ? `${filesBaseUrl.replace(/\/+$/, '')}/files/${chatId}/outputs/${encodeURIComponent(e.name)}`
-        : '';
+      const base = filesBaseUrl.replace(/\/+$/, '');
+      const prefix = flat
+        ? `${base}/files/${chatId}`
+        : `${base}/files/${safeEmail}/${chatId}`;
+      const url = base ? `${prefix}/outputs/${encodeURIComponent(e.name)}` : '';
       result.push({ name: e.name, url, size });
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
@@ -59,7 +64,7 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
           `SELECT t.id, t.chat_id, t.status, t.result, t.partial_result, t.pause_summary,
                   t.approval_prompt, t.error_message, t.steps_done, t.tokens_used,
                   t.started_at, t.finished_at, t.mode, t.max_time_sec, t.prompt_preview,
-                  c.workdir, c.app_port, c.model, c.project
+                  c.workdir, c.app_port, c.model, c.project, c.user_email
            FROM tasks t
            LEFT JOIN chats c ON c.id = t.chat_id
            WHERE t.id = ?`,
@@ -85,6 +90,7 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
             app_port: number | null;
             model: string | null;
             project: string | null;
+            user_email: string | null;
           }
         | undefined;
 
@@ -110,7 +116,7 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
       const isFinal = ['done', 'paused', 'error', 'timeout', 'cancelled'].includes(task.status);
       const files =
         isFinal && task.workdir
-          ? listOutputFiles(task.workdir, task.chat_id, filesBaseUrl)
+          ? listOutputFiles(task.workdir, task.chat_id, task.user_email ?? '', filesBaseUrl)
           : [];
       const appUrl =
         task.app_port && filesBaseUrl

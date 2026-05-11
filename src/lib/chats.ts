@@ -4,10 +4,24 @@ import { nanoid } from 'nanoid';
 import type Database from 'better-sqlite3';
 
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT ?? '/workspaces';
-/** Когда WORKSPACES_FLAT=1 — путь без email (BYOS: один сервер = один владелец). */
+/**
+ * Multi-tenant по умолчанию: путь содержит email юзера.
+ * Один сервер cc-bridge может обслуживать нескольких клиентов — каждый видит
+ * только свои файлы. Админ может «подарить» свой сервер клиенту,
+ * вписав те же bridge_url + bridge_token в user_servers клиента — чаты
+ * клиента лягут в отдельную папку `/workspaces/{email}/chats/...`.
+ *
+ * WORKSPACES_FLAT=1 — режим single-tenant (без email-папки). Используется
+ * только если уверены, что сервер обслуживает одного человека.
+ */
 const FLAT_LAYOUT = process.env.WORKSPACES_FLAT === '1';
 /** Шаблон CLAUDE.md, копируется в каждый новый workdir чата. */
 const CLAUDE_TEMPLATE = process.env.CLAUDE_TEMPLATE ?? '/etc/cc-bridge/CLAUDE.template.md';
+
+/** Безопасное представление email для пути файловой системы. */
+function safeEmail(email: string): string {
+  return email.replace(/[^a-zA-Z0-9@._-]/g, '_');
+}
 
 /** Возвращает абсолютный путь к workdir чата. */
 export function getWorkdirPath(userEmail: string, chatId: string, project?: string | null): string {
@@ -15,13 +29,12 @@ export function getWorkdirPath(userEmail: string, chatId: string, project?: stri
     // Project-режим: общая папка проекта, у каждого чата свой .claude/<chatId>/
     return FLAT_LAYOUT
       ? join(WORKSPACES_ROOT, 'projects', project)
-      : join(WORKSPACES_ROOT, userEmail.replace(/[^a-zA-Z0-9@._-]/g, '_'), 'projects', project);
+      : join(WORKSPACES_ROOT, safeEmail(userEmail), 'projects', project);
   }
   if (FLAT_LAYOUT) {
     return join(WORKSPACES_ROOT, 'chats', chatId);
   }
-  const safeEmail = userEmail.replace(/[^a-zA-Z0-9@._-]/g, '_');
-  return join(WORKSPACES_ROOT, safeEmail, 'chats', chatId);
+  return join(WORKSPACES_ROOT, safeEmail(userEmail), 'chats', chatId);
 }
 
 /** Подбирает свободный порт 3000-3999 для webapp этого чата. */

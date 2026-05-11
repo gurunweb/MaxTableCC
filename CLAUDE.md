@@ -27,18 +27,37 @@ Google Sheets (GAS) ──▶ MaxTableSaaS ──▶ cc-bridge ──▶ Claude 
 ## Где что лежит (на сервере)
 
 ```
-/opt/cc-bridge/           этот проект (git clone)
-/var/lib/cc-bridge/       SQLite БД (db.sqlite) — принадлежит maxclaude
-/etc/cc-bridge/env        production env (секреты) — 600 root:maxclaude
-/workspaces/              workdir'ы Claude (owned by maxclaude)
-  {email}/
+/opt/cc-bridge/                   этот проект (git clone)
+/var/lib/cc-bridge/               SQLite БД (db.sqlite) — принадлежит maxclaude
+/etc/cc-bridge/
+  ├── env                         production env (секреты) — 600 root:maxclaude
+  ├── system-prompt.md            глобальный системный промпт (Sheets-context)
+  ├── CLAUDE.template.md          шаблон, копируется в каждый новый workdir
+  ├── mcp.json                    конфиг MCP (playwright, fetch)
+  └── skills/                     /publish, /commit и др. — скиллы для Claude
+      └── *.md
+/workspaces/                      multi-tenant: каждый юзер видит только свою папку
+  {safeEmail}/                    например user_at_gmail.com
     chats/
       {chatId}/
-        .claude/          Claude session (для --resume)
-        attachments/      входные файлы
-        outputs/          что создал Claude
-        audit.log         PostToolUse hook log
+        .claude/                  Claude session (для --resume)
+        CLAUDE.md                 скопирован из template
+        attachments/              входные файлы
+        outputs/                  что создал Claude (раздаётся nginx-ом)
+        audit.log                 PostToolUse hook log
+    projects/{name}/              shared workdir для нескольких чатов одного проекта
+  playwright-profile/              shared chromium profile (cookies, логины) — пер-сервер
 ```
+
+**Multi-tenant** (по умолчанию): один сервер обслуживает нескольких пользователей,
+каждый видит только свою папку `/workspaces/{safeEmail}/`. Админ MaxTable может
+дать клиенту доступ к своему серверу, просто заполнив форму подключения в админке
+SaaS (`/admin/users/:id`) с теми же bridge_url+bridge_token. Клиент получит
+изолированную папку по своему email.
+
+**Single-tenant** (`WORKSPACES_FLAT=1` в env): без email-папки, чаты лежат в
+`/workspaces/chats/{chatId}/`. Используйте, если уверены что сервер обслуживает
+одного человека.
 
 ## Структура кода
 
@@ -107,13 +126,32 @@ Timer на `maxTime - 30` секунд шлёт Claude в stdin: "Время к�
 
 ## Деплой
 
+**Первичная установка** на свежем VPS (BYOS):
+
 ```bash
-ssh maxclaude@maxidea.pro
-cd /opt/cc-bridge
-./scripts/deploy.sh
+curl -fsSL https://raw.githubusercontent.com/gurunweb/MaxTableCC/main/scripts/install-claude.sh \
+  | sudo BRIDGE_DOMAIN=claude.example.com BRIDGE_TOKEN=<hex64> bash
 ```
 
-`deploy.sh` делает: `git pull + npm ci + sudo systemctl restart cc-bridge + health check`.
+[scripts/install-claude.sh](scripts/install-claude.sh) ставит: системные пакеты,
+Node 20, Claude Code CLI, juzer `maxclaude`, клонит репо, копирует конфиги в
+`/etc/cc-bridge/` (system-prompt, CLAUDE.template, mcp.json, skills/), пишет
+`/etc/cc-bridge/env` с переданными BRIDGE_TOKEN, поднимает systemd unit,
+получает SSL через certbot, настраивает nginx (proxy на /v1/* + статика
+`/files/{safeEmail}/{chatId}/outputs/*`). В конце — инструкция по одноразовому
+OAuth-логину Claude.
+
+`BRIDGE_DOMAIN` и `BRIDGE_TOKEN` обычно генерируются через дашборд SaaS
+(`maxtable.pro/dashboard/server`) — там же показывается полная команда.
+
+**Обновления** на уже работающем сервере:
+
+```bash
+ssh maxclaude@<host>
+cd /opt/cc-bridge
+git pull
+sudo systemctl restart cc-bridge
+```
 
 ## Конвенции кода
 
@@ -126,3 +164,5 @@ cd /opt/cc-bridge
 ## История
 
 - 2026-04-19: initial skeleton + deployment infra
+- 2026-05-11: model/project params, system-prompt protocol (Sheets-context), /publish skill, env CC_CALLER/CC_CHAT_ID/CC_APP_PORT/CC_FILES_BASE_URL, structured response в /status (summary, files[], appUrl)
+- 2026-05-12: multi-tenant по умолчанию (workdir с email юзера), nginx-конфиг с email-сегментом URL, install-claude.sh без SaaS install-token (BRIDGE_DOMAIN+BRIDGE_TOKEN из env напрямую)

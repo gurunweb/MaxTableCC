@@ -172,9 +172,12 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     args.push('--permission-mode', 'bypassPermissions');
   }
 
-  // Spawn claude — пробрасываем контекст «работаю через Google Sheets»
+  // Spawn claude — пробрасываем контекст «работаю через Google Sheets».
+  // URL включает email юзера для multi-tenant — nginx раздаёт из его папки.
+  const flat = process.env.WORKSPACES_FLAT === '1';
+  const safeEmail = input.userEmail.replace(/[^a-zA-Z0-9@._-]/g, '_');
   const filesBaseUrl = FILES_BASE_URL
-    ? `${FILES_BASE_URL.replace(/\/+$/, '')}/files/${chatId}`
+    ? `${FILES_BASE_URL.replace(/\/+$/, '')}/files/${flat ? '' : safeEmail + '/'}${chatId}`
     : '';
   const env: NodeJS.ProcessEnv = {
     ...process.env,
