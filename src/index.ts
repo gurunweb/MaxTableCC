@@ -11,18 +11,19 @@ import { runRoute } from './routes/run.ts';
 import { statusRoute } from './routes/status.ts';
 import { stopRoute } from './routes/stop.ts';
 import { metaRoute } from './routes/meta.ts';
+import { publishRoute } from './routes/publish.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Конфиг из env (через systemd EnvironmentFile=/etc/cc-bridge/env)
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '127.0.0.1';
-const BRIDGE_TOKEN = process.env.CLOUDCODE_BRIDGE_TOKEN;
+const BRIDGE_TOKEN = process.env.CLAUDECODE_BRIDGE_TOKEN ?? process.env.CLOUDCODE_BRIDGE_TOKEN;
 const DATABASE_PATH = process.env.DATABASE_PATH ?? '/var/lib/cc-bridge/db.sqlite';
 const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info';
 
 if (!BRIDGE_TOKEN || BRIDGE_TOKEN.length < 32) {
-  console.error('FATAL: CLOUDCODE_BRIDGE_TOKEN is missing or too short (min 32 chars)');
+  console.error('FATAL: CLAUDECODE_BRIDGE_TOKEN is missing or too short (min 32 chars)');
   process.exit(1);
 }
 
@@ -60,8 +61,15 @@ await fastify.register(healthRoute, {
   startTime,
 });
 
-// Middleware: X-Bridge-Token на всех /v1/*
+// Middleware: X-Bridge-Token на всех /v1/*. /internal/* — только с localhost.
 fastify.addHook('onRequest', async (request, reply) => {
+  if (request.url.startsWith('/internal/')) {
+    const ip = request.ip;
+    if (ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') {
+      return reply.code(403).send({ error: 'internal_localhost_only' });
+    }
+    return;
+  }
   if (!request.url.startsWith('/v1/')) return;
   const token = request.headers['x-bridge-token'];
   if (token !== BRIDGE_TOKEN) {
@@ -69,11 +77,14 @@ fastify.addHook('onRequest', async (request, reply) => {
   }
 });
 
-// Bridge API
-await fastify.register(runRoute, { prefix: '/v1/cloudcode/run', db });
-await fastify.register(statusRoute, { prefix: '/v1/cloudcode/status', db });
-await fastify.register(stopRoute, { prefix: '/v1/cloudcode/stop', db });
-await fastify.register(metaRoute, { prefix: '/v1/cloudcode/meta', db });
+// Bridge API (внешний — через X-Bridge-Token)
+await fastify.register(runRoute, { prefix: '/v1/claudecode/run', db });
+await fastify.register(statusRoute, { prefix: '/v1/claudecode/status', db });
+await fastify.register(stopRoute, { prefix: '/v1/claudecode/stop', db });
+await fastify.register(metaRoute, { prefix: '/v1/claudecode/meta', db });
+
+// Internal API (только с localhost — для Claude из своего workdir)
+await fastify.register(publishRoute, { prefix: '/internal', db });
 
 // Запуск
 try {

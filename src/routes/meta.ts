@@ -51,7 +51,7 @@ export const metaRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
     });
   });
 
-  // Все чаты (для админ-страницы /admin/cloudcode на SaaS)
+  // Все чаты (для админ-страницы /admin/claudecode на SaaS)
   fastify.get('/all-chats', async (_request, reply) => {
     const chats = db.prepare(
       `SELECT id, user_email, first_prompt, last_prompt, last_action, updated_at

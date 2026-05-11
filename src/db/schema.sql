@@ -8,12 +8,15 @@ PRAGMA busy_timeout = 5000;
 -- Чаты (= workdir'ы Claude-сессий)
 CREATE TABLE IF NOT EXISTS chats (
   id TEXT PRIMARY KEY,                  -- chatId (например 'chat-abc123')
-  user_email TEXT NOT NULL,             -- email юзера (из SaaS)
+  user_email TEXT NOT NULL,             -- email юзера (из SaaS, для shared-сервера)
   first_prompt TEXT,                    -- первый промпт (превью для sidebar)
   last_prompt TEXT,                     -- последний промпт
   last_action TEXT,                     -- последнее действие Claude (live-статус)
-  workdir TEXT NOT NULL,                -- абсолютный путь /workspaces/{email}/chats/{id}/
+  workdir TEXT NOT NULL,                -- абсолютный путь workdir чата
   claude_session_id TEXT,               -- session_id от Claude CLI (для --resume)
+  model TEXT,                           -- 'opus' | 'sonnet' | 'haiku' (фиксируется на первом запуске)
+  project TEXT,                         -- имя проекта (shared workdir для нескольких чатов)
+  app_port INTEGER,                     -- порт для webapp этого чата (CC_APP_PORT)
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -56,6 +59,27 @@ CREATE TABLE IF NOT EXISTS actions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_actions_task ON actions(task_id, id);
+
+-- Webapp-приложения, запущенные Claude в чатах (для reverse-proxy nginx)
+CREATE TABLE IF NOT EXISTS apps (
+  chat_id TEXT PRIMARY KEY,
+  port INTEGER NOT NULL,                -- 3000-3999
+  status TEXT NOT NULL DEFAULT 'idle',  -- idle|starting|running|crashed
+  started_at INTEGER,
+  FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+);
+
+-- Публичные короткие ссылки на файлы (опубликованы через skill /publish)
+CREATE TABLE IF NOT EXISTS public_links (
+  slug TEXT PRIMARY KEY,                -- короткий ID (8-12 символов)
+  chat_id TEXT NOT NULL,
+  path TEXT NOT NULL,                   -- путь относительно workdir
+  expires_at INTEGER,                   -- NULL = бессрочно
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_public_links_chat ON public_links(chat_id);
 
 -- View для быстрого polling (status + свежие действия)
 CREATE VIEW IF NOT EXISTS task_status AS

@@ -47,11 +47,11 @@ src/
 ├── index.ts              Fastify app entrypoint (запускает listen + регистрирует роуты)
 ├── routes/
 │   ├── health.ts         GET /health (public)
-│   ├── run.ts            POST /v1/cloudcode/run
-│   ├── status.ts         GET /v1/cloudcode/status/:taskId
-│   ├── stop.ts           POST /v1/cloudcode/stop/:taskId
-│   ├── meta.ts           GET /v1/cloudcode/meta/{chats,paused,subscription}
-│   └── chats.ts          DELETE /v1/cloudcode/chats/:chatId
+│   ├── run.ts            POST /v1/claudecode/run
+│   ├── status.ts         GET /v1/claudecode/status/:taskId
+│   ├── stop.ts           POST /v1/claudecode/stop/:taskId
+│   ├── meta.ts           GET /v1/claudecode/meta/{chats,paused,subscription}
+│   └── chats.ts          DELETE /v1/claudecode/chats/:chatId
 ├── lib/
 │   ├── db.ts             better-sqlite3 обёртка (WAL)
 │   ├── claudeRunner.ts   spawn claude -p + парсинг stream-json
@@ -67,15 +67,15 @@ src/
 | Метод | URL | Описание |
 |-------|-----|----------|
 | GET | `/health` | public, возвращает `{ok:1, version, uptime, node, platform}` |
-| POST | `/v1/cloudcode/run` | запуск задачи (новая / продолжение / resume-after-pause) |
-| GET | `/v1/cloudcode/status/:taskId` | polling статуса + новые actions |
-| POST | `/v1/cloudcode/stop/:taskId` | graceful stop |
-| GET | `/v1/cloudcode/meta/chats` | список чатов юзера |
-| GET | `/v1/cloudcode/meta/paused` | приостановленные задачи |
-| GET | `/v1/cloudcode/meta/subscription` | лимит Claude Max |
-| DELETE | `/v1/cloudcode/chats/:chatId` | удаление workdir |
+| POST | `/v1/claudecode/run` | запуск задачи (новая / продолжение / resume-after-pause) |
+| GET | `/v1/claudecode/status/:taskId` | polling статуса + новые actions |
+| POST | `/v1/claudecode/stop/:taskId` | graceful stop |
+| GET | `/v1/claudecode/meta/chats` | список чатов юзера |
+| GET | `/v1/claudecode/meta/paused` | приостановленные задачи |
+| GET | `/v1/claudecode/meta/subscription` | лимит Claude Max |
+| DELETE | `/v1/claudecode/chats/:chatId` | удаление workdir |
 
-Все `/v1/*` требуют `X-Bridge-Token: $CLOUDCODE_BRIDGE_TOKEN` (shared secret с SaaS).
+Все `/v1/*` требуют `X-Bridge-Token: $CLAUDECODE_BRIDGE_TOKEN` (shared secret с SaaS).
 
 ## Claude Code CLI запуск
 

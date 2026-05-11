@@ -13,8 +13,14 @@ interface RunBody {
   mode?: 'auto' | 'plan' | 'safe';
   maxTimeSec?: number;
   resumeFromPausedTask?: string;
-  // На будущее: context, dataInfo (attachments). Пока — только prompt
+  /** Модель: 'opus' | 'sonnet' | 'haiku' (фиксируется за чатом на первом запуске). */
+  model?: string;
+  /** Имя проекта — даёт shared workdir на несколько чатов (P2). */
+  project?: string;
+  // На будущее: context, dataInfo (attachments).
 }
+
+const ALLOWED_MODELS = new Set(['opus', 'sonnet', 'haiku']);
 
 export const runRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
   fastify.post<{ Body: RunBody }>('/', async (request, reply) => {
@@ -27,6 +33,11 @@ export const runRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
       return reply.code(400).send({ error: 'invalid_user_email' });
     }
 
+    const model = b.model && ALLOWED_MODELS.has(b.model) ? b.model : undefined;
+    const project = typeof b.project === 'string' && /^[a-z0-9_-]{1,40}$/i.test(b.project)
+      ? b.project
+      : undefined;
+
     try {
       const result = startTask(opts.db, {
         userEmail: b.userEmail,
@@ -35,6 +46,8 @@ export const runRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
         mode: b.mode,
         maxTimeSec: b.maxTimeSec,
         resumeFromPausedTask: b.resumeFromPausedTask,
+        model,
+        project,
       });
       return reply.send(result);
     } catch (err: any) {

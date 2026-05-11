@@ -7,6 +7,16 @@ import { ensureChat } from './chats.ts';
 import { installSafeHook, removeSafeHook } from './permissionHook.ts';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? '/home/maxclaude/.local/bin/claude';
+const SYSTEM_PROMPT_FILE = process.env.SYSTEM_PROMPT_FILE ?? '/etc/cc-bridge/system-prompt.md';
+const MCP_CONFIG = process.env.MCP_CONFIG ?? '/etc/cc-bridge/mcp.json';
+const FILES_BASE_URL = process.env.CC_FILES_BASE_URL ?? '';
+
+/** Маппинг alias → полный model ID. Полные ID легко обновляются здесь. */
+const MODEL_MAP: Record<string, string> = {
+  opus: 'claude-opus-4-7',
+  sonnet: 'claude-sonnet-4-6',
+  haiku: 'claude-haiku-4-5',
+};
 
 export type TaskStatus =
   | 'running'
@@ -28,6 +38,10 @@ export interface RunTaskInput {
   mode?: Mode;
   maxTimeSec?: number;
   resumeFromPausedTask?: string;
+  /** 'opus' | 'sonnet' | 'haiku' — фиксируется в chats.model на первом запуске. */
+  model?: string;
+  /** Имя проекта — даёт shared workdir. */
+  project?: string;
 }
 
 export interface RunTaskResult {
@@ -88,10 +102,12 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
   const mode: Mode = input.mode ?? 'auto';
   const maxTimeSec = Math.max(60, Math.min(3600, input.maxTimeSec ?? 1320));
 
-  const { chatId, workdir } = ensureChat(db, {
+  const { chatId, workdir, model: chatModel, project, appPort } = ensureChat(db, {
     userEmail: input.userEmail,
     chatId: input.chatId,
     firstPrompt: input.prompt,
+    model: input.model,
+    project: input.project,
   });
 
   const taskId = 'task-' + nanoid(12);
@@ -119,6 +135,21 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
   // Команда claude
   const args = ['-p', actualPrompt, '--output-format', 'stream-json', '--verbose'];
 
+  // Модель: alias → full id. Сохранена в chats.model на первом запуске.
+  if (chatModel && MODEL_MAP[chatModel]) {
+    args.push('--model', MODEL_MAP[chatModel]);
+  }
+
+  // Глобальный системный промпт (контекст «работаю через Google Sheets»)
+  if (existsSync(SYSTEM_PROMPT_FILE)) {
+    args.push('--append-system-prompt', `@${SYSTEM_PROMPT_FILE}`);
+  }
+
+  // MCP-конфиг (Playwright, filesystem, и т.д.)
+  if (existsSync(MCP_CONFIG)) {
+    args.push('--mcp-config', MCP_CONFIG);
+  }
+
   // --resume только если есть сохранённый claude_session_id
   const chatRow = db
     .prepare('SELECT claude_session_id FROM chats WHERE id = ?')
@@ -141,10 +172,18 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     args.push('--permission-mode', 'bypassPermissions');
   }
 
-  // Spawn claude
+  // Spawn claude — пробрасываем контекст «работаю через Google Sheets»
+  const filesBaseUrl = FILES_BASE_URL
+    ? `${FILES_BASE_URL.replace(/\/+$/, '')}/files/${chatId}`
+    : '';
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     // CLAUDE_CODE_OAUTH_TOKEN уже в env через systemd EnvironmentFile
+    CC_CALLER: 'gsheets',
+    CC_CHAT_ID: chatId,
+    CC_APP_PORT: String(appPort),
+    CC_FILES_BASE_URL: filesBaseUrl,
+    CC_PROJECT: project ?? '',
   };
   const proc = spawn(CLAUDE_BIN, args, {
     cwd: workdir,
