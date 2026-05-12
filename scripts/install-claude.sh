@@ -57,8 +57,17 @@ sudo -u maxclaude bash -lc 'cd /opt/cc-bridge && npm ci --omit=dev'
 
 # === [4/6] Claude Code CLI + конфиги в /etc/cc-bridge/ ===
 echo "[4/6] Установка Claude Code CLI..."
-if ! sudo -u maxclaude bash -lc 'command -v claude' >/dev/null 2>&1; then
-  sudo -u maxclaude bash -lc 'npm install --prefix /home/maxclaude/.local @anthropic-ai/claude-code && ln -sf /home/maxclaude/.local/node_modules/.bin/claude /home/maxclaude/.local/bin/claude'
+# Создаём .local/bin/ заранее — npm с -g --prefix кладёт бинарь туда
+mkdir -p /home/maxclaude/.local/bin
+chown -R maxclaude:maxclaude /home/maxclaude/.local
+if ! sudo -u maxclaude bash -lc 'test -x /home/maxclaude/.local/bin/claude'; then
+  # -g + --prefix → бинарь автоматом в /home/maxclaude/.local/bin/claude, симлинк не нужен
+  sudo -u maxclaude bash -lc 'npm install -g --prefix /home/maxclaude/.local @anthropic-ai/claude-code'
+fi
+# Добавляем PATH в bashrc, чтобы интерактивный `claude` для OAuth-логина работал
+if ! grep -q 'local/bin' /home/maxclaude/.bashrc 2>/dev/null; then
+  echo 'export PATH="$HOME/.local/bin:$PATH"' | sudo tee -a /home/maxclaude/.bashrc >/dev/null
+  chown maxclaude:maxclaude /home/maxclaude/.bashrc
 fi
 
 cp /opt/cc-bridge/config/system-prompt.md   /etc/cc-bridge/system-prompt.md
