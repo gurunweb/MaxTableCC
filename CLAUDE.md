@@ -166,19 +166,39 @@ Timer на `maxTime - 30` секунд шлёт Claude в stdin: "Время к�
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gurunweb/MaxTableCC/main/scripts/install-claude.sh \
-  | sudo BRIDGE_DOMAIN=claude.example.com BRIDGE_TOKEN=<hex64> bash
+  | sudo BRIDGE_DOMAIN=claude.example.com BRIDGE_TOKEN=<hex64> WITH_BROWSER=1 bash
 ```
 
+(`WITH_BROWSER=1` включает удалённый chromium через steel-browser — нужен 2+ ГБ
+RAM. Без флага cc-bridge ставится «налегке».)
+
 [scripts/install-claude.sh](scripts/install-claude.sh) ставит: системные пакеты,
-Node 20, Claude Code CLI, juzer `maxclaude`, клонит репо, копирует конфиги в
-`/etc/cc-bridge/` (system-prompt, CLAUDE.template, mcp.json, skills/), пишет
-`/etc/cc-bridge/env` с переданными BRIDGE_TOKEN, поднимает systemd unit,
-получает SSL через certbot, настраивает nginx (proxy на /v1/* + статика
-`/files/{safeEmail}/{chatId}/outputs/*`). В конце — инструкция по одноразовому
-OAuth-логину Claude.
+Node 22 LTS, Claude Code CLI, user `maxclaude`, клонит репо, копирует конфиги в
+`/etc/cc-bridge/` (system-prompt, CLAUDE.template, mcp.json с playwright, skills/),
+пишет `/etc/cc-bridge/env` с переданными BRIDGE_TOKEN, поднимает systemd unit,
+получает SSL через certbot, настраивает nginx (proxy на /v1/*, статика
+`/files/...`, viewer steel-browser на `/browser/{steelId}/`). При `WITH_BROWSER=1`
+дополнительно ставит Docker и запускает контейнер `ghcr.io/steel-dev/steel-browser:latest`
+на `127.0.0.1:3000`. В конце — инструкция по одноразовому OAuth-логину Claude.
 
 `BRIDGE_DOMAIN` и `BRIDGE_TOKEN` обычно генерируются через дашборд SaaS
-(`maxtable.pro/dashboard/server`) — там же показывается полная команда.
+(`maxtable.pro/dashboard/server`) — там же показывается полная команда с уже
+зашитым `WITH_BROWSER=1`.
+
+### Удалённый браузер (`WITH_BROWSER=1`)
+
+Подробности — план в [docs/](docs/) и память Claude. Кратко:
+
+- `steel-browser` контейнер на `127.0.0.1:3000` (combined image: API + viewer)
+- `mcp.json` подключает `@playwright/mcp@latest`; mcpMerge при `usesBrowser=true`
+  добавляет `--cdp-endpoint=ws://...` → playwright цепляется к chromium в steel
+- nginx-роут `/browser/{steelId}/?token=<JWT>` с `auth_request → SaaS
+  /auth/browser-check` (SaaS подписывает JWT; nginx проверяет через Cloudflare
+  с правильным SNI и резолвером). HTML-viewer `/v1/sessions/debug` модифицируется
+  on-the-fly через `sub_filter` (заменяет `ws://0.0.0.0:3000` на `wss://<host>`).
+  Дополнительный location `^~ /v1/sessions/cast` пропускает WebSocket screencast
+  напрямую в steel-контейнер.
+- Сессии в БД `browser_sessions` (миграция 004), idle-GC через 15 минут.
 
 **Обновления** на уже работающем сервере:
 
@@ -202,4 +222,5 @@ sudo systemctl restart cc-bridge
 - 2026-04-19: initial skeleton + deployment infra
 - 2026-05-11: model/project params, system-prompt protocol (Sheets-context), /publish skill, env CC_CALLER/CC_CHAT_ID/CC_APP_PORT/CC_FILES_BASE_URL, structured response в /status (summary, files[], appUrl)
 - 2026-05-12: multi-tenant по умолчанию (workdir с email юзера), nginx-конфиг с email-сегментом URL, install-claude.sh без SaaS install-token (BRIDGE_DOMAIN+BRIDGE_TOKEN из env напрямую)
+- 2026-05-12: **удалённый браузер через steel-browser.** Combined image `ghcr.io/steel-dev/steel-browser:latest` под `WITH_BROWSER=1`, playwright MCP в дефолтном mcp.json, миграция 004 (browser_sessions), nginx-роут `/browser/{id}/?token=<JWT>` с двойной защитой (JWT привязан к steelId через SaaS), sub_filter для переписывания захардкоженных `ws://0.0.0.0:3000` в HTML viewer-а, прокидывание WS `/v1/sessions/cast` напрямую в steel. SaaS `/auth/browser-check` принимает token-mode и cookie-mode. Idle-GC 15 минут. Чтобы все шаги (Docker+steel+playwright MCP+nginx routing) ставились одной командой — `WITH_BROWSER=1` всегда зашит в команду установки от SaaS.
 - 2026-05-12: **проекты как первичная сущность.** Таблица `projects(id, name, slug)`, FK `chats.project_id`, миграция 002 + auto-seeding для существующих prod-БД. Новый формат имени чата `YYMMDD_HHMM_XX`. Параметр `projectName` в `/run` с полной семантикой (создать / добавить чат / переименовать / 409). Slugify с транслитерацией кириллицы. Разделение `workdir` (cwd Claude) и `chat_dir` (артефакты). Nginx-location'ы для project и solo чатов + legacy fallback. Endpoint `GET /meta/projects`. Старые workdir'ы НЕ перемещаются — workdir в БД остаётся валидным.

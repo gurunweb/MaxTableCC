@@ -142,13 +142,15 @@ if [ "$WITH_BROWSER" = "1" ]; then
   mkdir -p /var/lib/steel
   # Идемпотентно: если контейнер уже запущен — пересоздаём, чтобы подтянуть свежий image
   docker rm -f steel 2>/dev/null || true
+  # Combined image (API + viewer player) — даёт нам /v1/sessions/debug viewer
+  # на том же порту 3000. Image -api без UI здесь не подходит.
   docker run -d --name steel \
     --restart=unless-stopped \
     -p 127.0.0.1:3000:3000 \
     -v /var/lib/steel:/app/.cache \
     --shm-size=2gb \
-    ghcr.io/steel-dev/steel-browser-api:latest
-  echo "    steel-browser запущен на 127.0.0.1:3000"
+    ghcr.io/steel-dev/steel-browser:latest
+  echo "    steel-browser (combined) запущен на 127.0.0.1:3000"
 fi
 
 # === [2/6] Юзер maxclaude и директории ===
@@ -289,9 +291,25 @@ server {
   ssl_certificate     /etc/letsencrypt/live/$BRIDGE_DOMAIN/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/$BRIDGE_DOMAIN/privkey.pem;
 
+  # DNS-резолвер — нужен для proxy_pass к maxtable.pro (внешний домен)
+  # в auth_request /_saas_auth. Без resolver nginx падает: «no resolver defined».
+  resolver 1.1.1.1 8.8.8.8 valid=60s ipv6=off;
+
   client_max_body_size 50M;
 
-  # Bridge API — все запросы /v1/* идут в node на 127.0.0.1:8080
+  # WebSocket cast для steel-browser — ДОЛЖЕН быть выше /v1/, иначе попадёт
+  # в cc-bridge node вместо steel-контейнера.
+  location ^~ /v1/sessions/cast {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+  }
+
+  # Bridge API — все остальные /v1/* идут в node на 127.0.0.1:8080
   location /v1/ {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
@@ -415,10 +433,9 @@ server {
   }
 
   # ─── steel-browser viewer (доступ человека к удалённому chromium) ───────────
-  # Авторизация одним auth_request к SaaS. SaaS проверяет JWT-токен из URL
-  # И сверяет payload.steelId === query.steelId — это даёт ownership-гарантию
-  # без второго sub-request к cc-bridge (nginx не разрешает дублирующий
-  # auth_request в одном location).
+  # /_saas_auth → SaaS /auth/browser-check (JWT валидируется, steelId сверяется
+  # с payload). Нужны proxy_ssl_server_name + proxy_ssl_name т.к. за maxtable.pro
+  # стоит Cloudflare и без SNI он не отдаёт сертификат.
   location = /_saas_auth {
     internal;
     proxy_pass $SAAS_AUTH_URL/auth/browser-check?token=\$arg_token&steelId=\$steel_id;
@@ -426,21 +443,29 @@ server {
     proxy_set_header Content-Length "";
     proxy_set_header Cookie \$http_cookie;
     proxy_set_header Host maxtable.pro;
+    proxy_ssl_server_name on;
+    proxy_ssl_name maxtable.pro;
+    proxy_ssl_protocols TLSv1.2 TLSv1.3;
   }
-  location ~ ^/browser/([A-Za-z0-9_-]+)(/.*)?$ {
-    set \$steel_id \$1;
-    set \$browser_rest \$2;
 
+  # Viewer: /browser/{steelId}/?token=... → steel /v1/sessions/debug (auto-attaches
+  # to live session). rewrite ... break — потому что proxy_pass с URI запрещён
+  # внутри regex location. sub_filter переписывает захардкоженный ws://0.0.0.0:3000
+  # в steel-HTML на wss://наш_домен — это критично для работы screencast WS.
+  location ~ ^/browser/([A-Za-z0-9_-]+)/?$ {
+    set \$steel_id \$1;
     auth_request /_saas_auth;
     auth_request_set \$auth_email \$upstream_http_x_auth_email;
-
-    proxy_pass http://127.0.0.1:3000/v1/sessions/\$steel_id\$browser_rest;
-    proxy_http_version 1.1;
+    rewrite ^ /v1/sessions/debug break;
+    proxy_pass http://127.0.0.1:3000;
     proxy_set_header Host \$host;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
+    proxy_http_version 1.1;
     proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
+
+    sub_filter "ws://0.0.0.0:3000"  "wss://\$host";
+    sub_filter "http://0.0.0.0:3000" "https://\$host";
+    sub_filter_once off;
+    sub_filter_types text/html application/javascript;
   }
 
   location / {
