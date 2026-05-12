@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
+import { getActiveByChat } from '../lib/browserSession.ts';
 
 interface Options {
   db: Database.Database;
@@ -143,6 +144,21 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
       const summary =
         extractSummary(task.result) ?? extractSummary(task.partial_result) ?? null;
 
+      // Browser-сессия чата (если есть active)
+      const browserRow = getActiveByChat(db, task.chat_id);
+      const browser = browserRow
+        ? {
+            sessionId: browserRow.steel_id,
+            viewerUrl: filesBaseUrl
+              ? `${filesBaseUrl.replace(/\/+$/, '')}${browserRow.viewer_path}`
+              : browserRow.viewer_path,
+            status: browserRow.status,
+            scope: browserRow.scope,
+            createdAt: browserRow.created_at,
+            lastUsedAt: browserRow.last_used_at,
+          }
+        : null;
+
       return reply.send({
         taskId: task.id,
         chatId: task.chat_id,
@@ -164,6 +180,7 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
         summary,
         files,
         appUrl,
+        browser,
         newActions: actions,
         lastActionId,
       });

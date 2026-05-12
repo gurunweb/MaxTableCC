@@ -171,7 +171,28 @@ export const runRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
         projectName,
         usesBrowser: !!b.usesBrowser,
       });
-      return reply.send(result);
+
+      // Достраиваем абсолютный viewerUrl из CC_FILES_BASE_URL (это тот же домен,
+      // на котором nginx раздаёт /browser/ через auth_request).
+      const filesBaseUrl = (process.env.CC_FILES_BASE_URL ?? '').replace(/\/+$/, '');
+      const browser = result.browserViewerPath
+        ? {
+            sessionId: result.browserSessionId,
+            viewerUrl: filesBaseUrl
+              ? `${filesBaseUrl}${result.browserViewerPath}`
+              : result.browserViewerPath,
+            status: 'active' as const,
+          }
+        : null;
+
+      return reply.send({
+        taskId: result.taskId,
+        chatId: result.chatId,
+        workdir: result.workdir,
+        chatDir: result.chatDir,
+        projectId: result.projectId,
+        browser,
+      });
     } catch (err: any) {
       fastify.log.error({ err }, 'startTask failed');
       return reply.code(500).send({ error: 'start_failed', message: err.message });

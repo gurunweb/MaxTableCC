@@ -14,6 +14,8 @@ import { metaRoute } from './routes/meta.ts';
 import { publishRoute } from './routes/publish.ts';
 import { publicLinkRoute } from './routes/publicLink.ts';
 import { resolveAppRoute } from './routes/resolveApp.ts';
+import { browserRoute, browserAuthRoute } from './routes/browser.ts';
+import { closeIdleSessions } from './lib/browserSession.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -92,6 +94,10 @@ await fastify.register(metaRoute, { prefix: '/v1/claudecode/meta', db });
 // Internal API (только с localhost — для Claude из своего workdir и nginx auth_request)
 await fastify.register(publishRoute, { prefix: '/internal', db });
 await fastify.register(resolveAppRoute, { prefix: '/internal/resolve-app', db });
+await fastify.register(browserAuthRoute, { prefix: '/internal', db });
+
+// Browser sessions (управление steel-browser сессиями)
+await fastify.register(browserRoute, { prefix: '/v1/browser', db });
 
 // Публичные короткие ссылки /p/:slug (без auth)
 await fastify.register(publicLinkRoute, { prefix: '/p', db });
@@ -105,8 +111,18 @@ try {
   process.exit(1);
 }
 
+// Cron: каждые 60 сек закрываем idle browser-сессии (>15 мин без активности).
+const browserGcInterval = setInterval(() => {
+  closeIdleSessions(db)
+    .then((n) => {
+      if (n > 0) fastify.log.info(`browser GC: closed ${n} idle sessions`);
+    })
+    .catch((err) => fastify.log.warn({ err }, 'browser GC failed'));
+}, 60_000);
+
 // Graceful shutdown
 const shutdown = async (signal: string) => {
+  clearInterval(browserGcInterval);
   fastify.log.info(`Received ${signal}, shutting down gracefully`);
   await fastify.close();
   db.close();
