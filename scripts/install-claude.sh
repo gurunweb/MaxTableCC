@@ -436,9 +436,11 @@ server {
   # /_saas_auth → SaaS /auth/browser-check (JWT валидируется, steelId сверяется
   # с payload). Нужны proxy_ssl_server_name + proxy_ssl_name т.к. за maxtable.pro
   # стоит Cloudflare и без SNI он не отдаёт сертификат.
+  # \$browser_token — переменная set в parent location, иначе \$arg_token в
+  # subrequest эвалится в пусто (nginx не наследует args в auth_request).
   location = /_saas_auth {
     internal;
-    proxy_pass $SAAS_AUTH_URL/auth/browser-check?token=\$arg_token&steelId=\$steel_id;
+    proxy_pass $SAAS_AUTH_URL/auth/browser-check?token=\$browser_token&steelId=\$steel_id;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
     proxy_set_header Cookie \$http_cookie;
@@ -454,6 +456,7 @@ server {
   # в steel-HTML на wss://наш_домен — это критично для работы screencast WS.
   location ~ ^/browser/([A-Za-z0-9_-]+)/?$ {
     set \$steel_id \$1;
+    set \$browser_token \$arg_token;
     auth_request /_saas_auth;
     auth_request_set \$auth_email \$upstream_http_x_auth_email;
     rewrite ^ /v1/sessions/debug break;
