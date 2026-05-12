@@ -24,12 +24,16 @@ fi
 LOG=/tmp/claude-bootstrap-$(date +%s).log
 exec > >(tee -a "$LOG") 2>&1
 
+WITH_BROWSER="${WITH_BROWSER:-0}"
+SAAS_AUTH_URL="${SAAS_AUTH_URL:-https://maxtable.pro}"
+
 echo "════════════════════════════════════════"
 echo "  🤖 Claude AI cc-bridge installer"
 echo "════════════════════════════════════════"
 echo "  Дата:   $(date)"
 echo "  Домен:  $BRIDGE_DOMAIN"
 echo "  Токен:  ${BRIDGE_TOKEN:0:8}…"
+echo "  Браузер: $([ "$WITH_BROWSER" = "1" ] && echo "ВКЛ (steel-browser)" || echo "ВЫКЛ")"
 echo "  Лог:    $LOG"
 echo ""
 
@@ -112,10 +116,39 @@ apt-get update -y
 apt-get install -y curl git nginx certbot python3-certbot-nginx xvfb \
   fonts-liberation libnss3 libxkbcommon0 libgbm1 libasound2t64 build-essential
 
-# Node 20 (для cc-bridge и Claude Code CLI)
-if ! command -v node >/dev/null 2>&1; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+# Node 22+ (для cc-bridge: нужен --experimental-strip-types для запуска TS напрямую,
+# флаг появился в Node 22.6). Если уже установлен Node < 22 — удаляем и ставим 22.
+NODE_OK=0
+if command -v node >/dev/null 2>&1; then
+  NODE_VER=$(node -p 'process.versions.node' 2>/dev/null | cut -d. -f1)
+  if [ "${NODE_VER:-0}" -ge 22 ] 2>/dev/null; then
+    NODE_OK=1
+  fi
+fi
+if [ "$NODE_OK" != "1" ]; then
+  echo "    Устанавливаю Node.js 22 (нужен --experimental-strip-types для TS-runtime)..."
+  apt-get remove -y nodejs 2>/dev/null || true
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
+fi
+
+# Docker + steel-browser (опционально, для удалённого браузера через playwright)
+if [ "$WITH_BROWSER" = "1" ]; then
+  echo "    Установка Docker + steel-browser..."
+  if ! command -v docker >/dev/null 2>&1; then
+    apt-get install -y docker.io
+    systemctl enable --now docker
+  fi
+  mkdir -p /var/lib/steel
+  # Идемпотентно: если контейнер уже запущен — пересоздаём, чтобы подтянуть свежий image
+  docker rm -f steel 2>/dev/null || true
+  docker run -d --name steel \
+    --restart=unless-stopped \
+    -p 127.0.0.1:3000:3000 \
+    -v /var/lib/steel:/app/.cache \
+    --shm-size=2gb \
+    ghcr.io/steel-dev/steel-browser-api:latest
+  echo "    steel-browser запущен на 127.0.0.1:3000"
 fi
 
 # === [2/6] Юзер maxclaude и директории ===
@@ -189,6 +222,12 @@ HOST=127.0.0.1
 # Включает X-Accel-Redirect в /p/:slug (раздача файла отдаётся nginx).
 # Локальный dev (без nginx) — оставьте пустым, файлы пойдут стримом.
 CC_USE_XACCEL=1
+# steel-browser (опционально). Если установлен с WITH_BROWSER=1 — раскомментировано.
+$([ "$WITH_BROWSER" = "1" ] && echo "STEEL_API_URL=http://127.0.0.1:3000" || echo "# STEEL_API_URL=http://127.0.0.1:3000")
+# SaaS endpoint, который nginx опрашивает для авторизации viewer-а браузера (cookie → email).
+SAAS_AUTH_URL=$SAAS_AUTH_URL
+# Idle-таймаут browser-сессий (мс). По умолчанию 15 минут.
+BROWSER_IDLE_TIMEOUT_MS=900000
 EOF
 chmod 600 /etc/cc-bridge/env
 chown root:maxclaude /etc/cc-bridge/env
@@ -373,6 +412,49 @@ server {
   location @app_not_running {
     default_type text/html;
     return 502 '<!doctype html><meta charset=utf-8><title>Приложение не запущено</title><body style="font-family:system-ui;max-width:560px;margin:60px auto;padding:0 20px;line-height:1.5"><h1>502 — приложение не отвечает</h1><p>Проект существует, но процесс на выделенном порту не запущен или упал. Попроси Claude перезапустить dev-server (<code>npm run dev</code>).</p></body>';
+  }
+
+  # ─── steel-browser viewer (доступ человека к удалённому chromium) ───────────
+  # Двухступенчатая авторизация:
+  #   1) /_saas_auth → SaaS endpoint /auth/browser-check (по cookie max_session)
+  #      возвращает 200 + X-Auth-Email, либо 401.
+  #   2) /_browser_auth → cc-bridge /internal/browser-auth (получает X-Auth-Email
+  #      из шага 1 + steelId из URI) → 200 если email = владелец сессии.
+  location = /_saas_auth {
+    internal;
+    # Пробрасываем ?token= из исходного запроса в SaaS — там JWT проверяется.
+    # Cookie тоже форвардим (на случай если юзер кликнет из дашборда SaaS).
+    proxy_pass $SAAS_AUTH_URL/auth/browser-check?token=\$arg_token;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_set_header Cookie \$http_cookie;
+    proxy_set_header Host maxtable.pro;
+  }
+  location = /_browser_auth {
+    internal;
+    proxy_pass http://127.0.0.1:8080/internal/browser-auth?steelId=\$steel_id;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_set_header X-Auth-Email \$auth_email;
+  }
+  location ~ ^/browser/([A-Za-z0-9_-]+)(/.*)?$ {
+    set \$steel_id \$1;
+    set \$browser_rest \$2;
+
+    # Шаг 1: проверить SaaS-cookie, получить email
+    auth_request /_saas_auth;
+    auth_request_set \$auth_email \$upstream_http_x_auth_email;
+
+    # Шаг 2: проверить, что email = владелец сессии (steel_id передан через переменную)
+    auth_request /_browser_auth;
+
+    proxy_pass http://127.0.0.1:3000/v1/sessions/\$steel_id\$browser_rest;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
   }
 
   location / {
