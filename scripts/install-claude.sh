@@ -125,11 +125,15 @@ mkdir -p /workspaces /var/lib/cc-bridge /etc/cc-bridge/skills
 chown -R maxclaude:maxclaude /workspaces /var/lib/cc-bridge
 
 # === [3/6] Клонируем cc-bridge (идемпотентно: clone или pull) ===
+# Если репо был склонирован раньше — он принадлежит maxclaude (после chown),
+# а git под root ругается «dubious ownership». Разрешаем root управлять им:
+git config --global --add safe.directory /opt/cc-bridge 2>/dev/null || true
+
 if [ -d /opt/cc-bridge/.git ]; then
   echo "[3/6] cc-bridge уже есть, обновляю до последней версии main..."
   cd /opt/cc-bridge
   git fetch --quiet origin main
-  git reset --hard origin/main
+  git reset --hard --quiet origin/main
   cd - >/dev/null
 else
   echo "[3/6] Клонирую cc-bridge..."
