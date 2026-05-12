@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import type Database from 'better-sqlite3';
 import { ensureChat } from './chats.ts';
-import { installSafeHook, removeSafeHook } from './permissionHook.ts';
+import { installHooks } from './permissionHook.ts';
+import { buildMergedMcpConfig } from './mcpMerge.ts';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? '/home/maxclaude/.local/bin/claude';
 const SYSTEM_PROMPT_FILE = process.env.SYSTEM_PROMPT_FILE ?? '/etc/cc-bridge/system-prompt.md';
@@ -152,9 +153,16 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     args.push('--append-system-prompt', `@${SYSTEM_PROMPT_FILE}`);
   }
 
-  // MCP-конфиг (Playwright, filesystem, и т.д.)
-  if (existsSync(MCP_CONFIG)) {
-    args.push('--mcp-config', MCP_CONFIG);
+  // MCP: сливаем global + project + chat .mcp.json в одно temp-файл.
+  // Если итог пуст — не передаём --mcp-config (Claude стартует без MCP).
+  const mcp = buildMergedMcpConfig({
+    globalConfigPath: MCP_CONFIG,
+    workdir,
+    chatDir,
+    userEmail: input.userEmail,
+  });
+  if (!mcp.isEmpty) {
+    args.push('--mcp-config', mcp.path);
   }
 
   // --resume только если есть сохранённый claude_session_id
@@ -165,17 +173,15 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     args.push('--resume', chatRow.claude_session_id);
   }
 
-  // Permission mode (hook пишется в <workdir>/.claude/settings.json — cwd для Claude)
+  // Hooks: PostToolUse auto-publish ставится всегда; PreToolUse permission-check
+  // только в safe-режиме. Settings.json пишется в <workdir>/.claude/.
+  installHooks(workdir, { safe: mode === 'safe' });
+
   if (mode === 'plan') {
     args.push('--permission-mode', 'plan');
-    removeSafeHook(workdir);
   } else if (mode === 'safe') {
-    // safe: default permissions + PreToolUse hook который даёт allow/ask/deny
-    installSafeHook(workdir);
     args.push('--permission-mode', 'default');
   } else {
-    // auto — полный байпас, hook чистим
-    removeSafeHook(workdir);
     args.push('--permission-mode', 'bypassPermissions');
   }
 
@@ -190,6 +196,11 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
   const filesBaseUrl = FILES_BASE_URL
     ? `${FILES_BASE_URL.replace(/\/+$/, '')}/files/${filesPath}`
     : '';
+  // URL живого webapp: для project-чата = /apps/{slug}/, для solo = /apps/c/{chatId}/.
+  const appPath = input.projectSlug ? input.projectSlug : `c/${chatId}`;
+  const appUrl = FILES_BASE_URL
+    ? `${FILES_BASE_URL.replace(/\/+$/, '')}/apps/${appPath}/`
+    : '';
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     // CLAUDE_CODE_OAUTH_TOKEN уже в env через systemd EnvironmentFile
@@ -198,6 +209,7 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     CC_CHAT_DIR: chatDir,
     CC_APP_PORT: String(appPort),
     CC_FILES_BASE_URL: filesBaseUrl,
+    CC_APP_URL: appUrl,
     CC_PROJECT_ID: projectId ?? '',
     CC_PROJECT_SLUG: input.projectSlug ?? '',
     CC_PROJECT_NAME: input.projectName ?? '',

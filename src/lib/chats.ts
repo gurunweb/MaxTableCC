@@ -98,13 +98,46 @@ export function getPaths(
   return { workdir: chat, chatDir: chat };
 }
 
-/** Подбирает свободный порт 3000-3999 для webapp этого чата. */
+/** Подбирает свободный порт 3000-3999 для webapp чата/проекта.
+ *  Если пул исчерпан — переиспользует порт чата/проекта без активности > 60 дней
+ *  (освобождает старую запись, отдаёт порт). */
 function pickAppPort(db: Database.Database): number {
-  const used = new Set<number>(
-    (db.prepare('SELECT port FROM apps').all() as Array<{ port: number }>).map((r) => r.port),
-  );
+  const used = new Set<number>();
+  for (const r of db.prepare('SELECT port FROM apps').all() as Array<{ port: number }>) {
+    used.add(r.port);
+  }
+  for (const r of db
+    .prepare('SELECT app_port FROM projects WHERE app_port IS NOT NULL')
+    .all() as Array<{ app_port: number }>) {
+    used.add(r.app_port);
+  }
   for (let p = 3000; p < 4000; p++) {
     if (!used.has(p)) return p;
+  }
+  // GC: пытаемся освободить stale-порт (нет активности > 60 дней).
+  const stale = Date.now() - 60 * 24 * 60 * 60 * 1000;
+  const staleChat = db
+    .prepare(
+      `SELECT id, app_port FROM chats
+       WHERE app_port IS NOT NULL AND updated_at < ?
+       ORDER BY updated_at ASC LIMIT 1`,
+    )
+    .get(stale) as { id: string; app_port: number } | undefined;
+  if (staleChat) {
+    db.prepare('UPDATE chats SET app_port = NULL WHERE id = ?').run(staleChat.id);
+    db.prepare('DELETE FROM apps WHERE chat_id = ?').run(staleChat.id);
+    return staleChat.app_port;
+  }
+  const staleProj = db
+    .prepare(
+      `SELECT id, app_port FROM projects
+       WHERE app_port IS NOT NULL AND updated_at < ?
+       ORDER BY updated_at ASC LIMIT 1`,
+    )
+    .get(stale) as { id: string; app_port: number } | undefined;
+  if (staleProj) {
+    db.prepare('UPDATE projects SET app_port = NULL WHERE id = ?').run(staleProj.id);
+    return staleProj.app_port;
   }
   throw new Error('no_free_app_port');
 }
@@ -147,10 +180,11 @@ export function createProject(
   }
   const id = 'proj_' + nanoid(10);
   const now = Date.now();
+  const appPort = pickAppPort(db);
   db.prepare(
-    `INSERT INTO projects (id, user_email, name, slug, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(id, userEmail, name, slug, now, now);
+    `INSERT INTO projects (id, user_email, name, slug, app_port, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, userEmail, name, slug, appPort, now, now);
   // Создаём корень проекта + копируем CLAUDE.md
   const root = join(userRoot(userEmail), 'projects', slug);
   mkdirSync(root, { recursive: true });

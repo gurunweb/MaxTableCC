@@ -12,6 +12,8 @@ import { statusRoute } from './routes/status.ts';
 import { stopRoute } from './routes/stop.ts';
 import { metaRoute } from './routes/meta.ts';
 import { publishRoute } from './routes/publish.ts';
+import { publicLinkRoute } from './routes/publicLink.ts';
+import { resolveAppRoute } from './routes/resolveApp.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -64,6 +66,7 @@ await fastify.register(healthRoute, {
 });
 
 // Middleware: X-Bridge-Token на всех /v1/*. /internal/* — только с localhost.
+// /p/* — публичные короткие ссылки, без auth.
 fastify.addHook('onRequest', async (request, reply) => {
   if (request.url.startsWith('/internal/')) {
     const ip = request.ip;
@@ -72,6 +75,7 @@ fastify.addHook('onRequest', async (request, reply) => {
     }
     return;
   }
+  if (request.url.startsWith('/p/')) return;
   if (!request.url.startsWith('/v1/')) return;
   const token = request.headers['x-bridge-token'];
   if (token !== BRIDGE_TOKEN) {
@@ -85,8 +89,12 @@ await fastify.register(statusRoute, { prefix: '/v1/claudecode/status', db });
 await fastify.register(stopRoute, { prefix: '/v1/claudecode/stop', db });
 await fastify.register(metaRoute, { prefix: '/v1/claudecode/meta', db });
 
-// Internal API (только с localhost — для Claude из своего workdir)
+// Internal API (только с localhost — для Claude из своего workdir и nginx auth_request)
 await fastify.register(publishRoute, { prefix: '/internal', db });
+await fastify.register(resolveAppRoute, { prefix: '/internal/resolve-app', db });
+
+// Публичные короткие ссылки /p/:slug (без auth)
+await fastify.register(publicLinkRoute, { prefix: '/p', db });
 
 // Запуск
 try {

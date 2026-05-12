@@ -267,6 +267,11 @@ server {
   # ChatId формат: новый YYMMDD_HHMM_XX или старый chat-<nanoid>.
   # Регэксп общий: [A-Za-z0-9_-]+ для chat-сегмента и [a-z0-9_-]+ для slug проекта.
 
+  # Project shared/: /files/{email}/projects/{slug}/shared/... — общие файлы проекта
+  location ~ ^/files/([a-zA-Z0-9@._-]+)/projects/([a-z0-9_-]+)/shared/(.+)$ {
+    alias /workspaces/\$1/projects/\$2/shared/\$3;
+    add_header Cache-Control "private, max-age=300";
+  }
   # Project chats: /files/{email}/projects/{slug}/chats/{chatId}/outputs/...
   location ~ ^/files/([a-zA-Z0-9@._-]+)/projects/([a-z0-9_-]+)/chats/([A-Za-z0-9_-]+)/outputs/(.+)$ {
     alias /workspaces/\$1/projects/\$2/chats/\$3/outputs/\$4;
@@ -275,6 +280,11 @@ server {
   # Solo chats (multi-tenant): /files/{email}/chats/{chatId}/outputs/...
   location ~ ^/files/([a-zA-Z0-9@._-]+)/chats/([A-Za-z0-9_-]+)/outputs/(.+)$ {
     alias /workspaces/\$1/chats/\$2/outputs/\$3;
+    add_header Cache-Control "private, max-age=300";
+  }
+  # Single-tenant (WORKSPACES_FLAT=1) project shared/: /files/projects/{slug}/shared/...
+  location ~ ^/files/projects/([a-z0-9_-]+)/shared/(.+)$ {
+    alias /workspaces/projects/\$1/shared/\$2;
     add_header Cache-Control "private, max-age=300";
   }
   # Single-tenant (WORKSPACES_FLAT=1) project: /files/projects/{slug}/chats/{chatId}/outputs/...
@@ -323,6 +333,8 @@ server {
     set \$resolve_app_uri /internal/resolve-app/chat/\$chat_id;
     auth_request /_resolve_app;
     auth_request_set \$app_port \$upstream_http_x_app_port;
+    error_page 401 403 = @app_not_found;
+    error_page 502 503 504 = @app_not_running;
     proxy_pass http://127.0.0.1:\$app_port\$rest\$is_args\$args;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -338,6 +350,8 @@ server {
     set \$resolve_app_uri /internal/resolve-app/project/\$proj_slug;
     auth_request /_resolve_app;
     auth_request_set \$app_port \$upstream_http_x_app_port;
+    error_page 401 403 = @app_not_found;
+    error_page 502 503 504 = @app_not_running;
     proxy_pass http://127.0.0.1:\$app_port\$rest\$is_args\$args;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -345,6 +359,16 @@ server {
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 1800s;
+  }
+
+  # 404 / 502 для /apps/ — понятные сообщения вместо стандартных nginx-страниц.
+  location @app_not_found {
+    default_type text/html;
+    return 404 '<!doctype html><meta charset=utf-8><title>Не найдено</title><body style="font-family:system-ui;max-width:560px;margin:60px auto;padding:0 20px;line-height:1.5"><h1>404 — приложение не найдено</h1><p>В этом cc-bridge нет проекта или чата с таким идентификатором, либо порт ещё не назначен.</p><p>Если ты только что попросил Claude развернуть проект — подожди ~10 секунд и обнови страницу.</p></body>';
+  }
+  location @app_not_running {
+    default_type text/html;
+    return 502 '<!doctype html><meta charset=utf-8><title>Приложение не запущено</title><body style="font-family:system-ui;max-width:560px;margin:60px auto;padding:0 20px;line-height:1.5"><h1>502 — приложение не отвечает</h1><p>Проект существует, но процесс на выделенном порту не запущен или упал. Попроси Claude перезапустить dev-server (<code>npm run dev</code>).</p></body>';
   }
 
   location / {

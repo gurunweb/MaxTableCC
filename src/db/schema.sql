@@ -11,12 +11,14 @@ CREATE TABLE IF NOT EXISTS projects (
   user_email TEXT NOT NULL,
   name TEXT NOT NULL,                   -- человеческое имя (может содержать кириллицу)
   slug TEXT NOT NULL,                   -- slug для ФС (lower-case, ascii)
+  app_port INTEGER,                     -- порт для webapp проекта (Next.js dev-server и т.п.)
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE (user_email, slug)
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_email, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_projects_app_port ON projects(app_port);
 
 -- Чаты (= workdir'ы Claude-сессий)
 CREATE TABLE IF NOT EXISTS chats (
