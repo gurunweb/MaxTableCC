@@ -2,7 +2,7 @@
 
 HTTP-обёртка над Claude Code CLI. Принимает задачи от MaxTableSaaS (Cloudflare Workers), запускает `claude -p ...` под подпиской Claude Max, возвращает результаты.
 
-Часть экосистемы **MaxTable** (интеграция Claude в Google Sheets через формулу `=MS_CLOUDCODE(A1)`).
+Часть экосистемы **MaxTable** (интеграция Claude в Google Sheets через формулу `=MS_CLAUDECODE(A1)`).
 
 ## Архитектура
 
@@ -30,7 +30,7 @@ Google Sheets (GAS) ──▶ MaxTableSaaS (Cloudflare) ──▶ cc-bridge (э�
 | GET | `/meta/health` | health-check для SaaS (200 OK + version + uptime) |
 | DELETE | `/chats/:chatId` | удалить workdir чата |
 
-Все endpoints требуют заголовок `X-Bridge-Token: $CLOUDCODE_BRIDGE_TOKEN` (shared secret с SaaS).
+Все endpoints требуют заголовок `X-Bridge-Token: $CLAUDECODE_BRIDGE_TOKEN` (shared secret с SaaS).
 
 ## Структура
 
@@ -100,7 +100,7 @@ ssh cc-server 'cd /opt/cc-bridge && ./scripts/deploy.sh'
 
 ## Связанные проекты
 
-- **MaxTableGS** — GAS-формула `MS_CLOUDCODE` ([gurunweb/MaxGS](https://github.com/gurunweb/MaxGS))
+- **MaxTableGS** — GAS-формула `MS_CLAUDECODE` ([gurunweb/MaxGS](https://github.com/gurunweb/MaxGS))
 - **MaxTableSaaS** — Cloudflare Workers прокси ([gurunweb/MaxTableSaaS](https://github.com/gurunweb/MaxTableSaaS))
 
 ## Документация

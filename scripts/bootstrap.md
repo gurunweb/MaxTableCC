@@ -54,7 +54,7 @@ sudo cp /opt/cc-bridge/config/mcp.template.json /etc/cc-bridge/mcp.json
 sudo cp -r /opt/cc-bridge/config/skills/* /etc/cc-bridge/skills/
 
 cat <<EOF | sudo tee /etc/cc-bridge/env
-CLOUDCODE_BRIDGE_TOKEN=$BRIDGE_TOKEN
+CLAUDECODE_BRIDGE_TOKEN=$BRIDGE_TOKEN
 WORKSPACES_ROOT=/workspaces
 WORKSPACES_FLAT=1
 CC_FILES_BASE_URL=https://$BRIDGE_DOMAIN
