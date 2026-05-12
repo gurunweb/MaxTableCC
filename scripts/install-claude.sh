@@ -33,36 +33,51 @@ echo "  Токен:  ${BRIDGE_TOKEN:0:8}…"
 echo "  Лог:    $LOG"
 echo ""
 
-# ─── DNS pre-check ──────────────────────────────────────────
+# ─── DNS pre-check через Google DNS HTTPS (без зависимости от dig/resolv.conf) ─
 # A-запись домена должна указывать на этот сервер, иначе certbot не выдаст SSL.
 SERVER_IP=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null \
          || curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null \
          || echo "")
-if command -v dig >/dev/null 2>&1; then
-  DOMAIN_IP=$(dig +short +time=3 +tries=2 "$BRIDGE_DOMAIN" A 2>/dev/null | tail -n1)
-elif command -v getent >/dev/null 2>&1; then
-  DOMAIN_IP=$(getent ahostsv4 "$BRIDGE_DOMAIN" 2>/dev/null | awk '{print $1; exit}')
-else
-  DOMAIN_IP=""
-fi
-if [ -n "$SERVER_IP" ] && [ -n "$DOMAIN_IP" ] && [ "$SERVER_IP" != "$DOMAIN_IP" ]; then
-  echo "⚠️  DNS PROBLEM:"
-  echo "     A-запись $BRIDGE_DOMAIN указывает на $DOMAIN_IP"
-  echo "     А этот сервер имеет публичный IP $SERVER_IP"
-  echo "     SSL через certbot НЕ получится."
+# Google Public DNS HTTPS API — авторитативный ответ, никакого локального кэша.
+# Парсим первую строку из "Answer":[{"name":"...","type":1,"TTL":...,"data":"X.X.X.X"}]
+DNS_JSON=$(curl -fsS --max-time 8 \
+  "https://dns.google/resolve?name=${BRIDGE_DOMAIN}&type=A" 2>/dev/null || echo "")
+DOMAIN_IP=$(echo "$DNS_JSON" \
+  | grep -oE '"data":"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' \
+  | head -n1 \
+  | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+
+if [ -z "$DOMAIN_IP" ]; then
+  echo "❌ DNS ОШИБКА: $BRIDGE_DOMAIN не имеет A-записи в интернете"
   echo ""
-  echo "     Что делать:"
-  echo "     1. Зайдите в админку своего DNS-провайдера (где купили домен)"
-  echo "     2. Создайте/измените A-запись: $BRIDGE_DOMAIN → $SERVER_IP"
-  echo "     3. Подождите 5-30 минут (DNS-распространение)"
-  echo "     4. Запустите этот скрипт заново"
+  echo "   Google DNS не нашёл A-запись для этого домена."
+  echo "   Возможные причины:"
+  echo "   1. Вы не владеете этим доменом (он принадлежит кому-то другому)"
+  echo "   2. NS-серверы домена не указывают на ту DNS-панель, где вы настраивали"
+  echo "   3. Запись настроена, но изменения ещё не сохранены"
+  echo "   4. DNS-распространение в процессе (попробуйте через 30 минут)"
   echo ""
-  echo "     Если хотите продолжить без SSL — нажмите Enter (на свой риск)."
-  echo "     Чтобы прервать — Ctrl+C."
+  echo "   Проверить вручную:"
+  echo "     curl 'https://dns.google/resolve?name=$BRIDGE_DOMAIN&type=A'"
+  echo "     → должно быть {\"Answer\":[{\"data\":\"<IP>\"}]}"
+  echo ""
+  echo "   Без A-записи certbot не выдаст SSL — установка будет неполной."
+  echo "   Чтобы прервать — Ctrl+C. Чтобы продолжить (без SSL) — Enter."
   read -r _ </dev/tty 2>/dev/null || true
-elif [ -z "$DOMAIN_IP" ]; then
-  echo "⚠️  Не смог проверить DNS для $BRIDGE_DOMAIN (dig/getent не вернули IP)."
-  echo "     Убедитесь, что A-запись настроена."
+elif [ -n "$SERVER_IP" ] && [ "$SERVER_IP" != "$DOMAIN_IP" ]; then
+  echo "❌ DNS ОШИБКА: $BRIDGE_DOMAIN указывает на другой IP"
+  echo ""
+  echo "   A-запись $BRIDGE_DOMAIN → $DOMAIN_IP"
+  echo "   Этот сервер             → $SERVER_IP"
+  echo ""
+  echo "   Что делать:"
+  echo "   1. Зайдите в админку DNS-провайдера (где зарегистрирован $BRIDGE_DOMAIN)"
+  echo "   2. Создайте/измените A-запись: $BRIDGE_DOMAIN → $SERVER_IP"
+  echo "   3. Подождите 5-30 минут (DNS-распространение)"
+  echo "   4. Запустите этот скрипт заново"
+  echo ""
+  echo "   Чтобы прервать — Ctrl+C. Чтобы продолжить (без SSL) — Enter."
+  read -r _ </dev/tty 2>/dev/null || true
 else
   echo "✅ DNS OK: $BRIDGE_DOMAIN → $DOMAIN_IP"
 fi
@@ -141,6 +156,7 @@ fi
 cp /opt/cc-bridge/config/system-prompt.md   /etc/cc-bridge/system-prompt.md
 cp /opt/cc-bridge/config/CLAUDE.template.md /etc/cc-bridge/CLAUDE.template.md
 cp /opt/cc-bridge/config/mcp.template.json  /etc/cc-bridge/mcp.json
+cp /opt/cc-bridge/config/mcp-registry.json  /etc/cc-bridge/mcp-registry.json
 cp -r /opt/cc-bridge/config/skills/*        /etc/cc-bridge/skills/
 
 # Hook-скрипты должны быть исполняемыми (PreToolUse/PostToolUse)
@@ -162,9 +178,13 @@ CC_FILES_BASE_URL=https://$BRIDGE_DOMAIN
 SYSTEM_PROMPT_FILE=/etc/cc-bridge/system-prompt.md
 CLAUDE_TEMPLATE=/etc/cc-bridge/CLAUDE.template.md
 MCP_CONFIG=/etc/cc-bridge/mcp.json
+MCP_REGISTRY=/etc/cc-bridge/mcp-registry.json
 DATABASE_PATH=/var/lib/cc-bridge/db.sqlite
 PORT=8080
 HOST=127.0.0.1
+# Включает X-Accel-Redirect в /p/:slug (раздача файла отдаётся nginx).
+# Локальный dev (без nginx) — оставьте пустым, файлы пойдут стримом.
+CC_USE_XACCEL=1
 EOF
 chmod 600 /etc/cc-bridge/env
 chown root:maxclaude /etc/cc-bridge/env
@@ -273,13 +293,62 @@ server {
     add_header Cache-Control "private, max-age=300";
   }
 
-  # Webapp reverse-proxy (порт читается из БД cc-bridge через auth_request — TODO)
-  location ~ ^/apps/ {
-    return 503 "Webapp routing pending\n";
+  # /p/{slug} — публичные короткие ссылки (через node, без auth).
+  location ^~ /p/ {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+  }
+
+  # X-Accel internal: node возвращает X-Accel-Redirect: /_files_internal/...
+  # nginx читает файл из /workspaces (а node может сидеть в jail).
+  location /_files_internal/ {
+    internal;
+    alias /;
+  }
+
+  # Webapp reverse-proxy: /apps/{project-slug}/...  или  /apps/c/{chatId}/...
+  # auth_request → /internal/resolve-app/... → X-App-Port → proxy_pass на 127.0.0.1:port
+  location = /_resolve_app {
+    internal;
+    proxy_pass http://127.0.0.1:8080\$resolve_app_uri;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+  }
+
+  location ~ ^/apps/c/([A-Za-z0-9_-]+)(/.*)?$ {
+    set \$chat_id \$1;
+    set \$rest \$2;
+    set \$resolve_app_uri /internal/resolve-app/chat/\$chat_id;
+    auth_request /_resolve_app;
+    auth_request_set \$app_port \$upstream_http_x_app_port;
+    proxy_pass http://127.0.0.1:\$app_port\$rest\$is_args\$args;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 1800s;
+  }
+
+  location ~ ^/apps/([a-z0-9_-]+)(/.*)?$ {
+    set \$proj_slug \$1;
+    set \$rest \$2;
+    set \$resolve_app_uri /internal/resolve-app/project/\$proj_slug;
+    auth_request /_resolve_app;
+    auth_request_set \$app_port \$upstream_http_x_app_port;
+    proxy_pass http://127.0.0.1:\$app_port\$rest\$is_args\$args;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 1800s;
   }
 
   location / {
-    return 404 "cc-bridge: используйте /v1/* или /files/*\n";
+    return 404 "cc-bridge: используйте /v1/*, /files/*, /apps/* или /p/*\n";
   }
 }
 NGINX
