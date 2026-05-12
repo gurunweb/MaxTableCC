@@ -1,11 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import type Database from 'better-sqlite3';
 import { ensureChat } from './chats.ts';
 import { installHooks } from './permissionHook.ts';
 import { buildMergedMcpConfig } from './mcpMerge.ts';
+import { getOrCreateForChat as getOrCreateBrowser } from './browserSession.ts';
+import { isSteelEnabled } from './steel.ts';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? '/home/maxclaude/.local/bin/claude';
 const SYSTEM_PROMPT_FILE = process.env.SYSTEM_PROMPT_FILE ?? '/etc/cc-bridge/system-prompt.md';
@@ -47,6 +49,9 @@ export interface RunTaskInput {
   projectSlug?: string | null;
   /** Человеческое имя проекта (для env Claude). */
   projectName?: string | null;
+  /** Если true и steel-browser сконфигурирован — будет создана browser-сессия
+   *  и playwright MCP подключится по CDP вместо launch. */
+  usesBrowser?: boolean;
 }
 
 export interface RunTaskResult {
@@ -55,6 +60,10 @@ export interface RunTaskResult {
   workdir: string;
   chatDir: string;
   projectId: string | null;
+  /** Путь к viewer-у браузера (если сессия создана). nginx раздаёт /browser/{id}/. */
+  browserViewerPath?: string;
+  /** ID сессии в steel (для админки/закрытия). */
+  browserSessionId?: string;
 }
 
 interface Running {
@@ -105,7 +114,10 @@ function describeTool(name: string, input: unknown): { kind: string; summary: st
 }
 
 /** Старт задачи: inserts row в tasks + spawn claude + возвращает {taskId, chatId, workdir}. */
-export function startTask(db: Database.Database, input: RunTaskInput): RunTaskResult {
+export async function startTask(
+  db: Database.Database,
+  input: RunTaskInput,
+): Promise<RunTaskResult> {
   const mode: Mode = input.mode ?? 'auto';
   const maxTimeSec = Math.max(60, Math.min(3600, input.maxTimeSec ?? 1320));
 
@@ -153,6 +165,26 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     args.push('--append-system-prompt', `@${SYSTEM_PROMPT_FILE}`);
   }
 
+  // Browser-сессия (steel-browser) — если usesBrowser=true и steel сконфигурирован.
+  // Создаётся ДО buildMergedMcpConfig, чтобы CDP-endpoint попал в playwright MCP конфиг.
+  let browserSession: { steelId: string; wsEndpoint: string; viewerPath: string } | null = null;
+  if (input.usesBrowser && isSteelEnabled()) {
+    try {
+      const bs = await getOrCreateBrowser(db, chatId);
+      if (bs) {
+        browserSession = {
+          steelId: bs.steelId,
+          wsEndpoint: bs.wsEndpoint,
+          viewerPath: bs.viewerPath,
+        };
+        appendBrowserLogToClaudeMd(workdir, bs.steelId, bs.viewerPath);
+      }
+    } catch (err: any) {
+      // Не валим задачу из-за browser — просто логируем, claude поедет без него
+      console.warn(`startTask: browser session creation failed: ${err.message}`);
+    }
+  }
+
   // MCP: сливаем global + project + chat .mcp.json в одно temp-файл.
   // Если итог пуст — не передаём --mcp-config (Claude стартует без MCP).
   const mcp = buildMergedMcpConfig({
@@ -160,6 +192,7 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     workdir,
     chatDir,
     userEmail: input.userEmail,
+    playwrightCdpEndpoint: browserSession?.wsEndpoint ?? null,
   });
   if (!mcp.isEmpty) {
     args.push('--mcp-config', mcp.path);
@@ -213,6 +246,10 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     CC_PROJECT_ID: projectId ?? '',
     CC_PROJECT_SLUG: input.projectSlug ?? '',
     CC_PROJECT_NAME: input.projectName ?? '',
+    CC_BROWSER_VIEWER_URL: browserSession
+      ? `${FILES_BASE_URL.replace(/\/+$/, '')}${browserSession.viewerPath}`
+      : '',
+    CC_BROWSER_SESSION_ID: browserSession?.steelId ?? '',
   };
   const proc = spawn(CLAUDE_BIN, args, {
     cwd: workdir,
@@ -287,7 +324,39 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
 
   running.set(taskId, { proc, softTimer });
 
-  return { taskId, chatId, workdir, chatDir, projectId };
+  return {
+    taskId,
+    chatId,
+    workdir,
+    chatDir,
+    projectId,
+    browserSessionId: browserSession?.steelId,
+    browserViewerPath: browserSession?.viewerPath,
+  };
+}
+
+/**
+ * Дописывает в CLAUDE.md чата секцию "Активные браузеры" (создаёт если нет).
+ * Идемпотентно: если steel_id уже упомянут в файле — не пишем повторно.
+ */
+function appendBrowserLogToClaudeMd(workdir: string, steelId: string, viewerPath: string): void {
+  const claudeMd = join(workdir, 'CLAUDE.md');
+  if (!existsSync(claudeMd)) return;
+  try {
+    const baseUrl = FILES_BASE_URL.replace(/\/+$/, '');
+    const url = baseUrl + viewerPath;
+    const ts = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const line = `- ${ts} | ${steelId} | ${url}\n`;
+    const existing = readFileSync(claudeMd, 'utf8');
+    if (existing.includes(steelId)) return;
+    if (existing.includes('## Активные браузеры')) {
+      appendFileSync(claudeMd, line);
+    } else {
+      appendFileSync(claudeMd, '\n## Активные браузеры\n' + line);
+    }
+  } catch (err: any) {
+    console.warn(`appendBrowserLogToClaudeMd: ${err.message}`);
+  }
 }
 
 /** Обработка одной stream-json строки. */

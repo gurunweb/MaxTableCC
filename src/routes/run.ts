@@ -27,6 +27,9 @@ interface RunBody {
    *   - задано     → создать проект / добавить чат / переименовать (зависит от состояния).
    */
   projectName?: string;
+  /** Если true — будет создана browser-сессия (steel-browser) и playwright MCP
+   *  подключится к ней по CDP. Если STEEL_API_URL не сконфигурирован — игнорируется. */
+  usesBrowser?: boolean;
 }
 
 const ALLOWED_MODELS = new Set(['opus', 'sonnet', 'haiku']);
@@ -155,7 +158,7 @@ export const runRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
     // ─────────────────────────────────────────────────────────────────────────
 
     try {
-      const result = startTask(db, {
+      const result = await startTask(db, {
         userEmail: b.userEmail,
         chatId: b.chatId,
         prompt: b.prompt,
@@ -166,6 +169,7 @@ export const runRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
         projectId,
         projectSlug,
         projectName,
+        usesBrowser: !!b.usesBrowser,
       });
       return reply.send(result);
     } catch (err: any) {

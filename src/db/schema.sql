@@ -101,6 +101,30 @@ CREATE TABLE IF NOT EXISTS public_links (
 
 CREATE INDEX IF NOT EXISTS idx_public_links_chat ON public_links(chat_id);
 
+-- Сессии headed-chromium через steel-browser.
+-- Одна active per (scope, scope_id): scope='project' → одна на проект, 'chat' → одна на чат.
+-- Авто-закрытие по idle (15 мин) — см. cron в src/index.ts.
+CREATE TABLE IF NOT EXISTS browser_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL,                  -- 'project' | 'chat'
+  scope_id TEXT NOT NULL,               -- project_id ИЛИ chat_id
+  user_email TEXT NOT NULL,
+  steel_id TEXT NOT NULL UNIQUE,        -- идентификатор сессии в steel-browser
+  ws_endpoint TEXT NOT NULL,            -- CDP-ws URL для playwright connectOverCDP
+  viewer_path TEXT NOT NULL,            -- /browser/{steel_id}/
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL,
+  closed_at INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_sessions_active
+  ON browser_sessions(scope, scope_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_user
+  ON browser_sessions(user_email, status, last_used_at DESC);
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_idle
+  ON browser_sessions(status, last_used_at);
+
 -- View для быстрого polling (status + свежие действия)
 CREATE VIEW IF NOT EXISTS task_status AS
 SELECT
