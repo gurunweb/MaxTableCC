@@ -415,38 +415,24 @@ server {
   }
 
   # ─── steel-browser viewer (доступ человека к удалённому chromium) ───────────
-  # Двухступенчатая авторизация:
-  #   1) /_saas_auth → SaaS endpoint /auth/browser-check (по cookie max_session)
-  #      возвращает 200 + X-Auth-Email, либо 401.
-  #   2) /_browser_auth → cc-bridge /internal/browser-auth (получает X-Auth-Email
-  #      из шага 1 + steelId из URI) → 200 если email = владелец сессии.
+  # Авторизация одним auth_request к SaaS. SaaS проверяет JWT-токен из URL
+  # И сверяет payload.steelId === query.steelId — это даёт ownership-гарантию
+  # без второго sub-request к cc-bridge (nginx не разрешает дублирующий
+  # auth_request в одном location).
   location = /_saas_auth {
     internal;
-    # Пробрасываем ?token= из исходного запроса в SaaS — там JWT проверяется.
-    # Cookie тоже форвардим (на случай если юзер кликнет из дашборда SaaS).
-    proxy_pass $SAAS_AUTH_URL/auth/browser-check?token=\$arg_token;
+    proxy_pass $SAAS_AUTH_URL/auth/browser-check?token=\$arg_token&steelId=\$steel_id;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
     proxy_set_header Cookie \$http_cookie;
     proxy_set_header Host maxtable.pro;
   }
-  location = /_browser_auth {
-    internal;
-    proxy_pass http://127.0.0.1:8080/internal/browser-auth?steelId=\$steel_id;
-    proxy_pass_request_body off;
-    proxy_set_header Content-Length "";
-    proxy_set_header X-Auth-Email \$auth_email;
-  }
   location ~ ^/browser/([A-Za-z0-9_-]+)(/.*)?$ {
     set \$steel_id \$1;
     set \$browser_rest \$2;
 
-    # Шаг 1: проверить SaaS-cookie, получить email
     auth_request /_saas_auth;
     auth_request_set \$auth_email \$upstream_http_x_auth_email;
-
-    # Шаг 2: проверить, что email = владелец сессии (steel_id передан через переменную)
-    auth_request /_browser_auth;
 
     proxy_pass http://127.0.0.1:3000/v1/sessions/\$steel_id\$browser_rest;
     proxy_http_version 1.1;
