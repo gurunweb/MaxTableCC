@@ -1,15 +1,4 @@
 {
-  "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest", "--browser=chromium", "--user-data-dir=/workspaces/playwright-profile"],
-      "env": {
-        "DISPLAY": ":1"
-      }
-    },
-    "fetch": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"]
-    }
-  }
+  "_comment": "Global enabled MCPs. Пусто по умолчанию — у Claude только базовые tools. Подключение MCP делается через скилл /mcp на уровне global/project/chat.",
+  "mcpServers": {}
 }

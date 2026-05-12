@@ -12,7 +12,7 @@
 Ты вызываешь internal endpoint cc-bridge:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8081/internal/publish \
+curl -s -X POST http://127.0.0.1:8080/internal/publish \
   -H 'Content-Type: application/json' \
   -d '{"chatId":"'"$CC_CHAT_ID"'","path":"outputs/hello.html","public":false}'
 ```
