@@ -40,14 +40,20 @@ export interface RunTaskInput {
   resumeFromPausedTask?: string;
   /** 'opus' | 'sonnet' | 'haiku' — фиксируется в chats.model на первом запуске. */
   model?: string;
-  /** Имя проекта — даёт shared workdir. */
-  project?: string;
+  /** ID проекта (если чат принадлежит проекту). Резолвится в route. */
+  projectId?: string | null;
+  /** Slug проекта (для построения путей). Резолвится в route. */
+  projectSlug?: string | null;
+  /** Человеческое имя проекта (для env Claude). */
+  projectName?: string | null;
 }
 
 export interface RunTaskResult {
   taskId: string;
   chatId: string;
   workdir: string;
+  chatDir: string;
+  projectId: string | null;
 }
 
 interface Running {
@@ -102,12 +108,13 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
   const mode: Mode = input.mode ?? 'auto';
   const maxTimeSec = Math.max(60, Math.min(3600, input.maxTimeSec ?? 1320));
 
-  const { chatId, workdir, model: chatModel, project, appPort } = ensureChat(db, {
+  const { chatId, workdir, chatDir, model: chatModel, projectId, appPort } = ensureChat(db, {
     userEmail: input.userEmail,
     chatId: input.chatId,
     firstPrompt: input.prompt,
     model: input.model,
-    project: input.project,
+    projectId: input.projectId ?? null,
+    projectSlug: input.projectSlug ?? null,
   });
 
   const taskId = 'task-' + nanoid(12);
@@ -158,7 +165,7 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
     args.push('--resume', chatRow.claude_session_id);
   }
 
-  // Permission mode
+  // Permission mode (hook пишется в <workdir>/.claude/settings.json — cwd для Claude)
   if (mode === 'plan') {
     args.push('--permission-mode', 'plan');
     removeSafeHook(workdir);
@@ -173,20 +180,27 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
   }
 
   // Spawn claude — пробрасываем контекст «работаю через Google Sheets».
-  // URL включает email юзера для multi-tenant — nginx раздаёт из его папки.
+  // URL включает email юзера и сегмент chats/ или projects/{slug}/chats/{id}/.
   const flat = process.env.WORKSPACES_FLAT === '1';
   const safeEmail = input.userEmail.replace(/[^a-zA-Z0-9@._-]/g, '_');
+  const emailSeg = flat ? '' : safeEmail + '/';
+  const filesPath = input.projectSlug
+    ? `${emailSeg}projects/${input.projectSlug}/chats/${chatId}`
+    : `${emailSeg}chats/${chatId}`;
   const filesBaseUrl = FILES_BASE_URL
-    ? `${FILES_BASE_URL.replace(/\/+$/, '')}/files/${flat ? '' : safeEmail + '/'}${chatId}`
+    ? `${FILES_BASE_URL.replace(/\/+$/, '')}/files/${filesPath}`
     : '';
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     // CLAUDE_CODE_OAUTH_TOKEN уже в env через systemd EnvironmentFile
     CC_CALLER: 'gsheets',
     CC_CHAT_ID: chatId,
+    CC_CHAT_DIR: chatDir,
     CC_APP_PORT: String(appPort),
     CC_FILES_BASE_URL: filesBaseUrl,
-    CC_PROJECT: project ?? '',
+    CC_PROJECT_ID: projectId ?? '',
+    CC_PROJECT_SLUG: input.projectSlug ?? '',
+    CC_PROJECT_NAME: input.projectName ?? '',
   };
   const proc = spawn(CLAUDE_BIN, args, {
     cwd: workdir,
@@ -261,7 +275,7 @@ export function startTask(db: Database.Database, input: RunTaskInput): RunTaskRe
 
   running.set(taskId, { proc, softTimer });
 
-  return { taskId, chatId, workdir };
+  return { taskId, chatId, workdir, chatDir, projectId };
 }
 
 /** Обработка одной stream-json строки. */

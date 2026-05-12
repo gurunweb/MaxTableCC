@@ -5,23 +5,41 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
 
+-- Проекты — группировка нескольких чатов под одной shared codebase.
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,                  -- 'proj_' + nanoid
+  user_email TEXT NOT NULL,
+  name TEXT NOT NULL,                   -- человеческое имя (может содержать кириллицу)
+  slug TEXT NOT NULL,                   -- slug для ФС (lower-case, ascii)
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (user_email, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_email, updated_at DESC);
+
 -- Чаты (= workdir'ы Claude-сессий)
 CREATE TABLE IF NOT EXISTS chats (
-  id TEXT PRIMARY KEY,                  -- chatId (например 'chat-abc123')
+  id TEXT PRIMARY KEY,                  -- chatId (новый формат: YYMMDD_HHMM_XX, старые: chat-<nanoid>)
   user_email TEXT NOT NULL,             -- email юзера (из SaaS, для shared-сервера)
   first_prompt TEXT,                    -- первый промпт (превью для sidebar)
   last_prompt TEXT,                     -- последний промпт
   last_action TEXT,                     -- последнее действие Claude (live-статус)
-  workdir TEXT NOT NULL,                -- абсолютный путь workdir чата
+  workdir TEXT NOT NULL,                -- абсолютный путь workdir чата (cwd для Claude)
+  chat_dir TEXT,                        -- папка чат-артефактов (attachments/outputs/audit.log).
+                                        --   Для одиночных чатов = workdir; для project-чатов отличается.
   claude_session_id TEXT,               -- session_id от Claude CLI (для --resume)
   model TEXT,                           -- 'opus' | 'sonnet' | 'haiku' (фиксируется на первом запуске)
-  project TEXT,                         -- имя проекта (shared workdir для нескольких чатов)
+  project TEXT,                         -- LEGACY: имя проекта строкой (для старых чатов до 002 миграции)
+  project_id TEXT,                      -- FK на projects(id); NULL = одиночный чат без проекта
   app_port INTEGER,                     -- порт для webapp этого чата (CC_APP_PORT)
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_chats_user ON chats(user_email, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chats_project ON chats(project_id);
 
 -- Задачи
 CREATE TABLE IF NOT EXISTS tasks (

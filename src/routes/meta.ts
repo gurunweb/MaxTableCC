@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type Database from 'better-sqlite3';
-import { listChats } from '../lib/chats.ts';
+import { listChats, listProjects } from '../lib/chats.ts';
 
 interface Options {
   db: Database.Database;
@@ -10,7 +10,7 @@ export const metaRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
   const db = opts.db;
 
   // Список чатов юзера (для sidebar dropdown)
-  fastify.get<{ Querystring: { user: string; limit?: string } }>(
+  fastify.get<{ Querystring: { user: string; limit?: string; project_id?: string } }>(
     '/chats',
     async (request, reply) => {
       const user = request.query.user;
@@ -18,8 +18,28 @@ export const metaRoute: FastifyPluginAsync<Options> = async (fastify, opts) => {
         return reply.code(400).send({ error: 'user_required' });
       }
       const limit = Math.min(200, Number(request.query.limit ?? 50));
-      const chats = listChats(db, user, limit);
+      let chats = listChats(db, user, limit);
+      if (request.query.project_id) {
+        const pid = request.query.project_id;
+        chats = (chats as Array<{ project_id: string | null }>).filter(
+          (c) => c.project_id === pid,
+        ) as typeof chats;
+      }
       return reply.send({ chats });
+    },
+  );
+
+  // Список проектов юзера
+  fastify.get<{ Querystring: { user: string; limit?: string } }>(
+    '/projects',
+    async (request, reply) => {
+      const user = request.query.user;
+      if (!user || !user.includes('@')) {
+        return reply.code(400).send({ error: 'user_required' });
+      }
+      const limit = Math.min(500, Number(request.query.limit ?? 100));
+      const projects = listProjects(db, user, limit);
+      return reply.send({ projects });
     },
   );
 

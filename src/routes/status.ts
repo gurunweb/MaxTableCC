@@ -18,14 +18,19 @@ function extractSummary(result: string | null): string | null {
   return line ? line.trim().slice(0, 240) : null;
 }
 
-/** Списком собирает выходные файлы чата (outputs/) с URL-ами. */
+/**
+ * Собирает выходные файлы чата (outputs/) с URL-ами.
+ * `chatDir` — папка чат-артефактов (для одиночного чата = workdir, для project — подпапка).
+ * `projectSlug` — для построения URL через nginx (если чат в проекте).
+ */
 function listOutputFiles(
-  workdir: string,
+  chatDir: string,
   chatId: string,
   userEmail: string,
+  projectSlug: string | null,
   filesBaseUrl: string,
 ): Array<{ name: string; url: string; size: number }> {
-  const outDir = join(workdir, 'outputs');
+  const outDir = join(chatDir, 'outputs');
   const flat = process.env.WORKSPACES_FLAT === '1';
   const safeEmail = (userEmail || '').replace(/[^a-zA-Z0-9@._-]/g, '_');
   try {
@@ -37,10 +42,11 @@ function listOutputFiles(
       let size = 0;
       try { size = statSync(full).size; } catch { /* noop */ }
       const base = filesBaseUrl.replace(/\/+$/, '');
-      const prefix = flat
-        ? `${base}/files/${chatId}`
-        : `${base}/files/${safeEmail}/${chatId}`;
-      const url = base ? `${prefix}/outputs/${encodeURIComponent(e.name)}` : '';
+      const emailSeg = flat ? '' : `${safeEmail}/`;
+      const pathSeg = projectSlug
+        ? `${emailSeg}projects/${projectSlug}/chats/${chatId}`
+        : `${emailSeg}chats/${chatId}`;
+      const url = base ? `${base}/files/${pathSeg}/outputs/${encodeURIComponent(e.name)}` : '';
       result.push({ name: e.name, url, size });
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
@@ -64,9 +70,11 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
           `SELECT t.id, t.chat_id, t.status, t.result, t.partial_result, t.pause_summary,
                   t.approval_prompt, t.error_message, t.steps_done, t.tokens_used,
                   t.started_at, t.finished_at, t.mode, t.max_time_sec, t.prompt_preview,
-                  c.workdir, c.app_port, c.model, c.project, c.user_email
+                  c.workdir, c.chat_dir, c.app_port, c.model, c.user_email,
+                  c.project_id, p.name as project_name, p.slug as project_slug
            FROM tasks t
            LEFT JOIN chats c ON c.id = t.chat_id
+           LEFT JOIN projects p ON p.id = c.project_id
            WHERE t.id = ?`,
         )
         .get(taskId) as
@@ -87,10 +95,13 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
             max_time_sec: number;
             prompt_preview: string | null;
             workdir: string | null;
+            chat_dir: string | null;
             app_port: number | null;
             model: string | null;
-            project: string | null;
             user_email: string | null;
+            project_id: string | null;
+            project_name: string | null;
+            project_slug: string | null;
           }
         | undefined;
 
@@ -114,9 +125,16 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
 
       // Структурированный возврат — для GAS: summary (первая строка), files[], appUrl
       const isFinal = ['done', 'paused', 'error', 'timeout', 'cancelled'].includes(task.status);
+      const chatDir = task.chat_dir ?? task.workdir;
       const files =
-        isFinal && task.workdir
-          ? listOutputFiles(task.workdir, task.chat_id, task.user_email ?? '', filesBaseUrl)
+        isFinal && chatDir
+          ? listOutputFiles(
+              chatDir,
+              task.chat_id,
+              task.user_email ?? '',
+              task.project_slug,
+              filesBaseUrl,
+            )
           : [];
       const appUrl =
         task.app_port && filesBaseUrl
@@ -131,7 +149,9 @@ export const statusRoute: FastifyPluginAsync<Options> = async (fastify, opts) =>
         status: task.status,
         mode: task.mode,
         model: task.model,
-        project: task.project,
+        project: task.project_slug
+          ? { id: task.project_id, name: task.project_name, slug: task.project_slug }
+          : null,
         stepsDone: task.steps_done,
         tokensUsed: task.tokens_used,
         startedAt: task.started_at,

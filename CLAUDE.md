@@ -38,16 +38,52 @@ Google Sheets (GAS) ──▶ MaxTableSaaS ──▶ cc-bridge ──▶ Claude 
       └── *.md
 /workspaces/                      multi-tenant: каждый юзер видит только свою папку
   {safeEmail}/                    например user_at_gmail.com
-    chats/
-      {chatId}/
-        .claude/                  Claude session (для --resume)
+    chats/                        ← одиночные чаты (без проекта)
+      {chatId}/                   формат имени: YYMMDD_HHMM_XX (с 2026-05-12)
+        .claude/                  hook-настройки (settings.json для safe-режима)
         CLAUDE.md                 скопирован из template
         attachments/              входные файлы
         outputs/                  что создал Claude (раздаётся nginx-ом)
         audit.log                 PostToolUse hook log
-    projects/{name}/              shared workdir для нескольких чатов одного проекта
+    projects/                     ← осознанные проекты (shared codebase)
+      {slug}/                     имя проекта в slug-формате (lower-case, ascii)
+        CLAUDE.md
+        (общие файлы проекта)     ← код, документы, доступны всем чатам проекта
+        chats/
+          {chatId}/
+            attachments/
+            outputs/
+            .claude/
   playwright-profile/              shared chromium profile (cookies, логины) — пер-сервер
 ```
+
+**Чаты vs Проекты** (с 2026-05-12):
+- **Одиночный чат** живёт в `chats/{chatId}/` — полноценный workdir с файлами и кодом.
+  По умолчанию каждый запуск формулы без `projectName` создаёт одиночный чат.
+- **Проект** — папка с общей кодовой базой, под которой может быть несколько чатов.
+  Каждый чат проекта имеет свой `chats/{chatId}/` для приватных артефактов, а корень
+  проекта — для shared codebase. Claude `cwd` = корень проекта.
+- **Имя чата** всегда автогенерация: `YYMMDD_HHMM_XX` (`260512_1430_a7` = 12.05.26, 14:30,
+  хвост `a7`). Пользователь не управляет именем чата.
+- **Имя проекта** даёт пользователь через параметр `projectName` в формуле
+  `MS_CLAUDECODE`. См. таблицу семантики ниже.
+- **Сессии Claude** не зависят от структуры папок — `claude_session_id` хранится
+  в `chats` и передаётся через `--resume`. Перенос workdir сломает сессию (Claude
+  хранит её по path-hash в `~/.claude/projects/`), поэтому **существующие чаты НЕ
+  перемещаются** на новой схеме — workdir в БД остаётся валидным.
+
+### Семантика `projectName` (в `POST /v1/claudecode/run`)
+
+| Сценарий | Поведение |
+|---|---|
+| `projectName` не задан, новый чат | Создать в `chats/{auto}/`. |
+| `projectName` не задан, resume по `chatId` | Resume там, где чат лежит. |
+| `projectName: "MySite"`, новый чат, проекта нет | Создать проект `projects/MySite/` + первый чат внутри. |
+| `projectName: "MySite"`, новый чат, проект есть | Добавить новый чат в существующий проект. |
+| `projectName: "X"`, resume чата, чат уже в `X` | No-op. |
+| `projectName: "NewName"`, resume чата из `OldName`, свободно | Rename проекта (`fs.rename` + UPDATE). |
+| `projectName: "NewName"`, resume, занято | **409 Conflict**. |
+| `projectName: "X"`, resume одиночного чата (`/chats/`) | **409 Conflict** (одиночный не переносится). |
 
 **Multi-tenant** (по умолчанию): один сервер обслуживает нескольких пользователей,
 каждый видит только свою папку `/workspaces/{safeEmail}/`. Админ MaxTable может
@@ -166,3 +202,4 @@ sudo systemctl restart cc-bridge
 - 2026-04-19: initial skeleton + deployment infra
 - 2026-05-11: model/project params, system-prompt protocol (Sheets-context), /publish skill, env CC_CALLER/CC_CHAT_ID/CC_APP_PORT/CC_FILES_BASE_URL, structured response в /status (summary, files[], appUrl)
 - 2026-05-12: multi-tenant по умолчанию (workdir с email юзера), nginx-конфиг с email-сегментом URL, install-claude.sh без SaaS install-token (BRIDGE_DOMAIN+BRIDGE_TOKEN из env напрямую)
+- 2026-05-12: **проекты как первичная сущность.** Таблица `projects(id, name, slug)`, FK `chats.project_id`, миграция 002 + auto-seeding для существующих prod-БД. Новый формат имени чата `YYMMDD_HHMM_XX`. Параметр `projectName` в `/run` с полной семантикой (создать / добавить чат / переименовать / 409). Slugify с транслитерацией кириллицы. Разделение `workdir` (cwd Claude) и `chat_dir` (артефакты). Nginx-location'ы для project и solo чатов + legacy fallback. Endpoint `GET /meta/projects`. Старые workdir'ы НЕ перемещаются — workdir в БД остаётся валидным.

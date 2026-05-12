@@ -158,22 +158,39 @@ server {
     proxy_pass http://127.0.0.1:8080;
   }
 
-  # Статика чатов. Multi-tenant: путь /files/{emailSafe}/{chatId}/outputs/...
-  # cc-bridge формирует URL с email, nginx раздаёт из соответствующей папки юзера.
+  # Статика чатов. Multi-tenant: путь /files/{emailSafe}/...
+  # ChatId формат: новый YYMMDD_HHMM_XX или старый chat-<nanoid>.
+  # Регэксп общий: [A-Za-z0-9_-]+ для chat-сегмента и [a-z0-9_-]+ для slug проекта.
+
+  # Project chats: /files/{email}/projects/{slug}/chats/{chatId}/outputs/...
+  location ~ ^/files/([a-zA-Z0-9@._-]+)/projects/([a-z0-9_-]+)/chats/([A-Za-z0-9_-]+)/outputs/(.+)$ {
+    alias /workspaces/\$1/projects/\$2/chats/\$3/outputs/\$4;
+    add_header Cache-Control "private, max-age=300";
+  }
+  # Solo chats (multi-tenant): /files/{email}/chats/{chatId}/outputs/...
+  location ~ ^/files/([a-zA-Z0-9@._-]+)/chats/([A-Za-z0-9_-]+)/outputs/(.+)$ {
+    alias /workspaces/\$1/chats/\$2/outputs/\$3;
+    add_header Cache-Control "private, max-age=300";
+  }
+  # Single-tenant (WORKSPACES_FLAT=1) project: /files/projects/{slug}/chats/{chatId}/outputs/...
+  location ~ ^/files/projects/([a-z0-9_-]+)/chats/([A-Za-z0-9_-]+)/outputs/(.+)$ {
+    alias /workspaces/projects/\$1/chats/\$2/outputs/\$3;
+    add_header Cache-Control "private, max-age=300";
+  }
+  # Single-tenant solo: /files/chats/{chatId}/outputs/...
+  location ~ ^/files/chats/([A-Za-z0-9_-]+)/outputs/(.+)$ {
+    alias /workspaces/chats/\$1/outputs/\$2;
+    add_header Cache-Control "private, max-age=300";
+  }
+  # LEGACY (старый формат до 002 миграции): /files/{email}/{chatId}/outputs/...
   location ~ ^/files/([a-zA-Z0-9@._-]+)/(chat-[^/]+)/outputs/(.+)$ {
     alias /workspaces/\$1/chats/\$2/outputs/\$3;
     add_header Cache-Control "private, max-age=300";
   }
-  # Fallback для single-tenant (WORKSPACES_FLAT=1): /files/{chatId}/outputs/...
-  location ~ ^/files/(chat-[^/]+)/outputs/(.+)$ {
-    alias /workspaces/chats/\$1/outputs/\$2;
-    add_header Cache-Control "private, max-age=300";
-  }
 
   # Webapp reverse-proxy (порт читается из БД cc-bridge через auth_request — TODO)
-  # На MVP: каждый чат на своём порту 3000-3999, маршрутизацию доделаем в P1.5
-  location ~ ^/apps/chat- {
-    return 503 "Webapp routing pending — настроим в следующей итерации\n";
+  location ~ ^/apps/ {
+    return 503 "Webapp routing pending\n";
   }
 
   location / {

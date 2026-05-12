@@ -31,8 +31,20 @@ export const publishRoute: FastifyPluginAsync<Options> = async (fastify, opts) =
     }
 
     const chat = db
-      .prepare('SELECT id, workdir FROM chats WHERE id = ?')
-      .get(b.chatId) as { id: string; workdir: string } | undefined;
+      .prepare(
+        `SELECT c.id, c.workdir, c.chat_dir, c.user_email, p.slug as project_slug
+         FROM chats c LEFT JOIN projects p ON p.id = c.project_id
+         WHERE c.id = ?`,
+      )
+      .get(b.chatId) as
+      | {
+          id: string;
+          workdir: string;
+          chat_dir: string | null;
+          user_email: string;
+          project_slug: string | null;
+        }
+      | undefined;
     if (!chat) {
       return reply.code(404).send({ error: 'chat_not_found' });
     }
@@ -63,10 +75,20 @@ export const publishRoute: FastifyPluginAsync<Options> = async (fastify, opts) =
       return reply.send({ ok: true, url, slug, expiresAt });
     }
 
-    // Приватная ссылка (полный путь, защищённый nginx auth_request)
+    // Приватная ссылка. Путь должен совпадать с nginx-location:
+    //   project chat: /files/{email}/projects/{slug}/chats/{chatId}/...
+    //   solo chat:    /files/{email}/chats/{chatId}/...
+    //   single-tenant (WORKSPACES_FLAT=1): без email-сегмента.
+    const flat = process.env.WORKSPACES_FLAT === '1';
+    const safeEmail = (chat.user_email || '').replace(/[^a-zA-Z0-9@._-]/g, '_');
+    const emailSeg = flat ? '' : `${safeEmail}/`;
+    const pathSeg = chat.project_slug
+      ? `${emailSeg}projects/${chat.project_slug}/chats/${b.chatId}`
+      : `${emailSeg}chats/${b.chatId}`;
+    const relUrl = rel.split('\\').join('/');
     const url = FILES_BASE_URL
-      ? `${FILES_BASE_URL.replace(/\/+$/, '')}/files/${b.chatId}/${rel.split('\\').join('/')}`
-      : `/files/${b.chatId}/${rel.split('\\').join('/')}`;
+      ? `${FILES_BASE_URL.replace(/\/+$/, '')}/files/${pathSeg}/${relUrl}`
+      : `/files/${pathSeg}/${relUrl}`;
     const st = statSync(abs);
     return reply.send({
       ok: true,

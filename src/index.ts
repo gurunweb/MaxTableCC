@@ -5,7 +5,7 @@ import Fastify from 'fastify';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { openDb } from './lib/db.ts';
+import { openDb, runMigrations, isFreshDb } from './lib/db.ts';
 import { healthRoute } from './routes/health.ts';
 import { runRoute } from './routes/run.ts';
 import { statusRoute } from './routes/status.ts';
@@ -33,10 +33,12 @@ if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
   );
 }
 
-// Инициализация БД + миграция
+// Инициализация БД + миграции
 const db = openDb(DATABASE_PATH);
+const fresh = isFreshDb(db);
 const schema = readFileSync(join(__dirname, 'db', 'schema.sql'), 'utf8');
 db.exec(schema);
+runMigrations(db, join(__dirname, 'db', 'migrations'), fresh);
 
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as {
   version: string;
