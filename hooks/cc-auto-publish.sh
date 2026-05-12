@@ -47,9 +47,12 @@ CHAT_ID="${CC_CHAT_ID:-}"
 
 BRIDGE_URL="${CC_BRIDGE_INTERNAL_URL:-http://127.0.0.1:8080}"
 
+# public:true → endpoint вернёт короткий URL /p/{slug} без email в пути.
+# Если юзер хочет приватный URL (с email-сегментом) — он явно попросит Claude
+# через skill /publish с public:false.
 RESP=$(curl -s -m 5 -X POST "${BRIDGE_URL%/}/internal/publish" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg c "$CHAT_ID" --arg p "$REL" '{chatId:$c, path:$p}')" 2>/dev/null)
+  -d "$(jq -nc --arg c "$CHAT_ID" --arg p "$REL" '{chatId:$c, path:$p, public:true}')" 2>/dev/null)
 
 URL=$(echo "$RESP" | jq -r '.url // empty' 2>/dev/null)
 [ -z "$URL" ] && exit 0
