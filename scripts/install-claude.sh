@@ -31,6 +31,29 @@ echo "Log:    $LOG"
 
 # === [1/6] Системные пакеты ===
 echo "[1/6] Установка системных пакетов..."
+
+# Ждём освобождения apt-lock — на свежем VPS unattended-upgrades часто блокирует
+# первые 5-15 минут после boot. Без этой задержки скрипт падает с "Could not get
+# lock /var/lib/dpkg/lock-frontend".
+WAIT=0
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+   || fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+   || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+  if [ $WAIT -eq 0 ]; then
+    echo "    apt занят другим процессом (вероятно unattended-upgrades). Жду..."
+  fi
+  WAIT=$((WAIT+5))
+  if [ $WAIT -gt 900 ]; then
+    echo "ERROR: apt занят >15 минут. Остановите вручную:"
+    echo "    sudo systemctl stop unattended-upgrades"
+    echo "    sudo killall -9 unattended-upgr 2>/dev/null"
+    echo "  и запустите установку заново."
+    exit 1
+  fi
+  sleep 5
+done
+[ $WAIT -gt 0 ] && echo "    apt свободен (ждали ${WAIT}с), продолжаю..."
+
 apt-get update -y
 apt-get install -y curl git nginx certbot python3-certbot-nginx xvfb \
   fonts-liberation libnss3 libxkbcommon0 libgbm1 libasound2t64 build-essential
