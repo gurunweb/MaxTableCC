@@ -1,4 +1,9 @@
 {
-  "_comment": "Global enabled MCPs. Пусто по умолчанию — у Claude только базовые tools. Подключение MCP делается через скилл /mcp на уровне global/project/chat.",
-  "mcpServers": {}
+  "_comment": "Global enabled MCPs. По умолчанию подключён playwright (нужен для удалённого браузера через steel-browser). Если WITH_BROWSER=1 — mcpMerge.ts переключит playwright на --cdp-endpoint, иначе он запустит свой chromium с per-user user-data-dir. Дополнительные MCP-сервера подключаются через скилл /mcp на уровне project/chat.",
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  }
 }

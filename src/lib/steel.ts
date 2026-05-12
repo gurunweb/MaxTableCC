@@ -54,6 +54,9 @@ export interface CreateSessionInput {
 export async function createSession(input: CreateSessionInput = {}): Promise<SteelSession> {
   const body: Record<string, unknown> = {
     sessionTimeout: input.timeoutMs ?? 1000 * 60 * 60, // 1 час hard-limit на стороне steel
+    // Обход бага fingerprint-generator (steel issue #295: "Failed to generate a
+    // consistent fingerprint after 10 attempts"). PR #164 добавил этот флаг.
+    skipFingerprintInjection: true,
   };
   if (input.sessionId) body.sessionId = input.sessionId;
   if (input.userAgent) body.userAgent = input.userAgent;
