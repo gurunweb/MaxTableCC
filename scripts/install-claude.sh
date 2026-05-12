@@ -24,10 +24,49 @@ fi
 LOG=/tmp/claude-bootstrap-$(date +%s).log
 exec > >(tee -a "$LOG") 2>&1
 
-echo "=== Claude AI install: $(date) ==="
-echo "Domain: $BRIDGE_DOMAIN"
-echo "Token:  ${BRIDGE_TOKEN:0:8}..."
-echo "Log:    $LOG"
+echo "════════════════════════════════════════"
+echo "  🤖 Claude AI cc-bridge installer"
+echo "════════════════════════════════════════"
+echo "  Дата:   $(date)"
+echo "  Домен:  $BRIDGE_DOMAIN"
+echo "  Токен:  ${BRIDGE_TOKEN:0:8}…"
+echo "  Лог:    $LOG"
+echo ""
+
+# ─── DNS pre-check ──────────────────────────────────────────
+# A-запись домена должна указывать на этот сервер, иначе certbot не выдаст SSL.
+SERVER_IP=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null \
+         || curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null \
+         || echo "")
+if command -v dig >/dev/null 2>&1; then
+  DOMAIN_IP=$(dig +short +time=3 +tries=2 "$BRIDGE_DOMAIN" A 2>/dev/null | tail -n1)
+elif command -v getent >/dev/null 2>&1; then
+  DOMAIN_IP=$(getent ahostsv4 "$BRIDGE_DOMAIN" 2>/dev/null | awk '{print $1; exit}')
+else
+  DOMAIN_IP=""
+fi
+if [ -n "$SERVER_IP" ] && [ -n "$DOMAIN_IP" ] && [ "$SERVER_IP" != "$DOMAIN_IP" ]; then
+  echo "⚠️  DNS PROBLEM:"
+  echo "     A-запись $BRIDGE_DOMAIN указывает на $DOMAIN_IP"
+  echo "     А этот сервер имеет публичный IP $SERVER_IP"
+  echo "     SSL через certbot НЕ получится."
+  echo ""
+  echo "     Что делать:"
+  echo "     1. Зайдите в админку своего DNS-провайдера (где купили домен)"
+  echo "     2. Создайте/измените A-запись: $BRIDGE_DOMAIN → $SERVER_IP"
+  echo "     3. Подождите 5-30 минут (DNS-распространение)"
+  echo "     4. Запустите этот скрипт заново"
+  echo ""
+  echo "     Если хотите продолжить без SSL — нажмите Enter (на свой риск)."
+  echo "     Чтобы прервать — Ctrl+C."
+  read -r _ </dev/tty 2>/dev/null || true
+elif [ -z "$DOMAIN_IP" ]; then
+  echo "⚠️  Не смог проверить DNS для $BRIDGE_DOMAIN (dig/getent не вернули IP)."
+  echo "     Убедитесь, что A-запись настроена."
+else
+  echo "✅ DNS OK: $BRIDGE_DOMAIN → $DOMAIN_IP"
+fi
+echo ""
 
 # === [1/6] Системные пакеты ===
 echo "[1/6] Установка системных пакетов..."
@@ -70,10 +109,16 @@ id -u maxclaude >/dev/null 2>&1 || useradd -m -s /bin/bash maxclaude
 mkdir -p /workspaces /var/lib/cc-bridge /etc/cc-bridge/skills
 chown -R maxclaude:maxclaude /workspaces /var/lib/cc-bridge
 
-# === [3/6] Клонируем cc-bridge ===
-echo "[3/6] git clone cc-bridge..."
-if [ ! -d /opt/cc-bridge/.git ]; then
-  git clone https://github.com/gurunweb/MaxTableCC.git /opt/cc-bridge
+# === [3/6] Клонируем cc-bridge (идемпотентно: clone или pull) ===
+if [ -d /opt/cc-bridge/.git ]; then
+  echo "[3/6] cc-bridge уже есть, обновляю до последней версии main..."
+  cd /opt/cc-bridge
+  git fetch --quiet origin main
+  git reset --hard origin/main
+  cd - >/dev/null
+else
+  echo "[3/6] Клонирую cc-bridge..."
+  git clone --depth 1 https://github.com/gurunweb/MaxTableCC.git /opt/cc-bridge
 fi
 chown -R maxclaude:maxclaude /opt/cc-bridge
 sudo -u maxclaude bash -lc 'cd /opt/cc-bridge && npm ci --omit=dev'
@@ -97,6 +142,14 @@ cp /opt/cc-bridge/config/system-prompt.md   /etc/cc-bridge/system-prompt.md
 cp /opt/cc-bridge/config/CLAUDE.template.md /etc/cc-bridge/CLAUDE.template.md
 cp /opt/cc-bridge/config/mcp.template.json  /etc/cc-bridge/mcp.json
 cp -r /opt/cc-bridge/config/skills/*        /etc/cc-bridge/skills/
+
+# Hook-скрипты должны быть исполняемыми (PreToolUse/PostToolUse)
+chmod +x /opt/cc-bridge/hooks/*.sh
+
+# jq нужен hook'ам для парсинга JSON от Claude Code
+if ! command -v jq >/dev/null 2>&1; then
+  apt-get install -y jq
+fi
 
 cat > /etc/cc-bridge/env <<EOF
 CLAUDECODE_BRIDGE_TOKEN=$BRIDGE_TOKEN
@@ -232,25 +285,64 @@ server {
 NGINX
 nginx -t && systemctl reload nginx
 
-# === [6/6] Логин в Claude Code (интерактивно) и запуск ===
+# === [6/6] Запуск + автоматическая проверка ===
 echo "[6/6] Запуск cc-bridge..."
 systemctl restart cc-bridge
+sleep 2
 
-echo
-echo "================================================================"
-echo "✅ cc-bridge установлен."
-echo "    Health:     https://$BRIDGE_DOMAIN/health"
-echo "    Лог:        $LOG"
-echo
-echo "⚠️  ВАЖНО: cc-bridge нужен Claude OAuth-токен. Выполните:"
+# Локальный health-check (через 127.0.0.1, без SSL — чтобы понять что node работает)
+LOCAL_HEALTH=$(curl -fsS --max-time 5 http://127.0.0.1:8080/health 2>/dev/null || echo "")
+PUBLIC_HEALTH=$(curl -fsS --max-time 8 "https://$BRIDGE_DOMAIN/health" 2>/dev/null || echo "")
+
 echo ""
-echo "    sudo -u maxclaude /home/maxclaude/.local/bin/claude"
+echo "════════════════════════════════════════"
+if [ -n "$PUBLIC_HEALTH" ]; then
+  echo "  ✅ Установка успешна!"
+  echo "════════════════════════════════════════"
+  echo ""
+  echo "  🟢 https://$BRIDGE_DOMAIN/health отвечает:"
+  echo "     $PUBLIC_HEALTH"
+elif [ -n "$LOCAL_HEALTH" ]; then
+  echo "  ⚠️  cc-bridge работает локально, но https-доступа нет"
+  echo "════════════════════════════════════════"
+  echo ""
+  echo "  Локально (127.0.0.1:8080/health):"
+  echo "     $LOCAL_HEALTH"
+  echo ""
+  echo "  Скорее всего проблема с nginx/SSL/DNS:"
+  echo "  - проверь A-запись: $BRIDGE_DOMAIN должна указывать на $SERVER_IP"
+  echo "  - проверь nginx: sudo nginx -t && sudo systemctl status nginx"
+  echo "  - проверь SSL: ls -la /etc/letsencrypt/live/$BRIDGE_DOMAIN/"
+  echo "  - попробуй вручную: sudo certbot --nginx -d $BRIDGE_DOMAIN"
+else
+  echo "  ❌ cc-bridge не запустился"
+  echo "════════════════════════════════════════"
+  echo ""
+  echo "  Диагностика:"
+  echo "     sudo systemctl status cc-bridge"
+  echo "     sudo journalctl -u cc-bridge -n 50"
+fi
+
 echo ""
-echo "    Скрипт даст OAuth-ссылку — откройте в браузере, залогиньтесь"
-echo "    под аккаунтом Claude Max. После этого:"
+echo "─────────────────────────────────────────"
+echo "  ⚠️  ДАЛЬШЕ — OAuth-логин в Claude (ОБЯЗАТЕЛЬНО)"
+echo "─────────────────────────────────────────"
 echo ""
+echo "  cc-bridge нужен ваш Claude Max OAuth-токен. Выполните:"
+echo ""
+echo "    sudo -u maxclaude -i"
+echo "    claude"
+echo ""
+echo "  Появится ссылка вида https://claude.ai/oauth/authorize?...."
+echo "  Откройте её в браузере, залогиньтесь под Claude Max."
+echo "  Скопируйте код обратно в терминал. Затем:"
+echo ""
+echo "    exit                                    # выходим из shell maxclaude"
 echo "    sudo systemctl restart cc-bridge"
-echo
-echo "Проверка работы:"
+echo ""
+echo "─────────────────────────────────────────"
+echo "  Финальная проверка:"
 echo "    curl -fsS https://$BRIDGE_DOMAIN/health"
-echo "================================================================"
+echo ""
+echo "  Лог установки: $LOG"
+echo "═════════════════════════════════════════"
